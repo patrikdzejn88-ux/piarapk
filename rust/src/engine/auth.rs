@@ -17,9 +17,15 @@ pub async fn add_account_phone(
     pool: &str,
     phone: &str,
 ) -> anyhow::Result<serde_json::Value> {
-    // погасить прошлую попытку (тот же телефон)
-    if let Some(old) = state.pending_auths.lock().remove(phone) {
-        let mut p = old.lock().await;
+    // погасить прошлую попытку (тот же телефон).
+    // ВАЖНО: parking_lot-гард не должен переживать .await (future: Send),
+    // поэтому блокировка строго в scoped-блоке до await.
+    let old = {
+        let mut map = state.pending_auths.lock();
+        map.remove(phone)
+    };
+    if let Some(old) = old {
+        let p = old.lock().await;
         p._handle.quit();
         let file = p.session_file.clone();
         let still_used = {
