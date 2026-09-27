@@ -141,7 +141,7 @@ class _ShopScreenState extends State<ShopScreen> {
             FilledButton.icon(
               onPressed: _askApiKey,
               icon: const Icon(Icons.key),
-              label: const Text(_error == null ? 'Указать ключ' : 'Сменить ключ'),
+              label: Text(_error == null ? 'Указать ключ' : 'Сменить ключ'),
             ),
           ],
         ),
