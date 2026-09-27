@@ -154,10 +154,10 @@ pub extern "C" fn piar_call_async(
         unsafe { *request_id = id };
     }
 
-    let app = app.clone();
+    let task_app = app.clone();
     app.runtime.spawn(async move {
-        let (ok, data, error) = dispatch_async(&app, &m, &params).await;
-        app.event(id, "result", &m, ok, data, error);
+        let (ok, data, error) = dispatch_async(&task_app, &m, &params).await;
+        task_app.event(id, "result", &m, ok, data, error);
     });
     0
 }

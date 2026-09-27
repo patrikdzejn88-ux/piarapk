@@ -132,7 +132,8 @@ pub async fn submit_auth_password(
         return Err(err_json("NO_AUTH", "нет начатого входа для этого номера"));
     };
     let mut p = pending.lock().await;
-    let Some(token) = p.password_token.clone() else {
+    // PasswordToken не Clone — забираем (на InvalidPassword вернётся новый)
+    let Some(token) = p.password_token.take() else {
         return Err(err_json("NO_NEED_2FA", "этот вход не ждёт 2FA-пароль (введите код)"));
     };
     match p.client.check_password(token, password.as_bytes()).await {

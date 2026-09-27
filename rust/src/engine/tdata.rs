@@ -7,8 +7,9 @@ use std::path::Path;
 
 use aes::cipher::generic_array::GenericArray;
 use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+// md5::Digest и sha1::Digest — один и тот же трейт digest::Digest, одного
+// импорта достаточно для всех хешей (md5/sha1/sha2).
 use md5::Digest as _;
-use sha1::Digest as _;
 
 type Aes256IgeEnc = ige::Encryptor<aes::Aes256>;
 type Aes256IgeDec = ige::Decryptor<aes::Aes256>;
@@ -337,7 +338,8 @@ pub fn parse_tdata(tdata_dir: &Path) -> Result<TdataInfo, TdataError> {
 fn open_tdf_first(prefix: &Path) -> Result<Vec<u8>, TdataError> {
     let mut last_err = None;
     for suffix in ["0", "1", "s"] {
-        let p = Path::new(&format!("{}{}", prefix.display(), suffix));
+        let name = format!("{}{}", prefix.display(), suffix);
+        let p = Path::new(&name);
         if p.exists() {
             match open_tdf(p) {
                 Ok(payload) => return Ok(payload),
