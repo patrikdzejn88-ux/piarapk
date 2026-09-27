@@ -26,17 +26,12 @@ workflows:
           rustup target add aarch64-linux-android armv7-linux-androideabi
           cargo install cargo-ndk --locked
 
-      - name: Locate Android SDK / sdkmanager
+      - name: Setup Android NDK (r27+, 16KB page)
         script: |
           set -e
           export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/local/share/android-sdk}"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          # уже установленный NDK?
-          if compgen -G "$ANDROID_SDK_ROOT/ndk/*" >/dev/null; then
-            echo "NDK already present: $(ls "$ANDROID_SDK_ROOT/ndk/")"
-            exit 0
-          fi
-          # ищем sdkmanager в стандартных местах
+          # ищем sdkmanager
           SDKM=""
           for c in cmdline-tools/latest/bin/sdkmanager cmdline-tools/bin/sdkmanager tools/bin/sdkmanager; do
             if [ -x "$ANDROID_SDK_ROOT/$c" ]; then SDKM="$ANDROID_SDK_ROOT/$c"; break; fi
@@ -44,15 +39,16 @@ workflows:
           if [ -z "$SDKM" ]; then
             SDKM=$(find "$ANDROID_SDK_ROOT" -type f -name sdkmanager 2>/dev/null | head -n 1 || true)
           fi
-          if [ -z "$SDKM" ]; then
-            echo "sdkmanager не найден в $ANDROID_SDK_ROOT" >&2
-            ls -la "$ANDROID_SDK_ROOT" >&2 || true
-            exit 1
+          if [ -n "$SDKM" ]; then
+            echo "sdkmanager: $SDKM"
+            yes | "$SDKM" --licenses >/dev/null 2>&1 || true
+            # всегда ставим r27+ (16KB page support); ранний выход по
+            # существующему NDK убран — r25 даёт 4KB-выравнивание
+            "$SDKM" "ndk;27.0.12077973" >/dev/null || echo "WARN: NDK 27 не установился — fallback на существующий"
+          else
+            echo "WARN: sdkmanager не найден — fallback на существующий NDK"
           fi
-          echo "sdkmanager: $SDKM"
-          yes | "$SDKM" --licenses >/dev/null 2>&1 || true
-          "$SDKM" "ndk;27.0.12077973" >/dev/null
-          echo "installed: $(ls "$ANDROID_SDK_ROOT/ndk/")"
+          echo "NDK present: $(ls "$ANDROID_SDK_ROOT/ndk/" 2>/dev/null || echo none)"
 
       - name: Rust unit tests
         script: |
@@ -64,11 +60,15 @@ workflows:
           set -e
           source "$HOME/.cargo/env"
           export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/local/share/android-sdk}"
-          NDK_DIR=$(ls -d "$ANDROID_SDK_ROOT/ndk/"*/ 2>/dev/null | head -n 1)
+          # предпочитаем r27 (16KB page), fallback — любой установленный
+          NDK_DIR="$ANDROID_SDK_ROOT/ndk/27.0.12077973"
+          if [ ! -d "$NDK_DIR" ]; then NDK_DIR=$(ls -d "$ANDROID_SDK_ROOT/ndk/"*/ 2>/dev/null | head -n 1); fi
           if [ -z "$NDK_DIR" ]; then echo "NDK не найден" >&2; exit 1; fi
           echo "NDK: $NDK_DIR"
           export ANDROID_NDK_HOME="$NDK_DIR"
           export NDK_HOME="$NDK_DIR"
+          # 16KB page alignment (Android 15+ / новые устройства)
+          export RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384"
           # cargo-ndk требует запуск из каталога крейта (cargo metadata в cwd)
           cd rust
           cargo ndk -t arm64-v8a -t armeabi-v7a \

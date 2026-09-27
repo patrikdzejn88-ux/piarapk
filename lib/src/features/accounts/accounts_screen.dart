@@ -20,6 +20,14 @@ class _AccountsScreenState extends State<AccountsScreen> {
   void initState() {
     super.initState();
     _controller.reload();
+    // перерисоваться, когда ядро доинициализируется (UI-гонка: баннер
+    // «ядро не найдено» иначе остаётся навсегда при успешной поздней загрузке)
+    PiarCore.instance.init().then((_) {
+      if (mounted) {
+        setState(() {});
+        _controller.reload();
+      }
+    });
   }
 
   @override
