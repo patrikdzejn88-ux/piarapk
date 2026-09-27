@@ -68,10 +68,12 @@ workflows:
           echo "NDK: $NDK_DIR"
           export ANDROID_NDK_HOME="$NDK_DIR"
           export NDK_HOME="$NDK_DIR"
+          # cargo-ndk требует запуск из каталога крейта (cargo metadata в cwd)
+          cd rust
           cargo ndk -t arm64-v8a -t armeabi-v7a \
-            -o android/app/src/main/jniLibs \
-            build --release --manifest-path rust/Cargo.toml
-          ls -laR android/app/src/main/jniLibs/ || true
+            -o ../android/app/src/main/jniLibs \
+            build --release
+          ls -laR ../android/app/src/main/jniLibs/ || true
 
       - name: Flutter pub get
         script: flutter pub get
