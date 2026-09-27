@@ -38,10 +38,11 @@ class _AccountsScreenState extends State<AccountsScreen> {
         body: Column(
           children: [
             if (!core.available)
-              const _NoticeBox(
-                text:
-                    'Ядро piarcore не найдено рядом с приложением — управление '
-                    'аккаунтами недоступно (сборка без Rust-библиотеки).',
+              _NoticeBox(
+                text: core.lastError != null
+                    ? 'Ядро piarcore не загрузилось: ${core.lastError}'
+                    : 'Ядро piarcore не найдено рядом с приложением — управление '
+                        'аккаунтами недоступно (сборка без Rust-библиотеки).',
               ),
             const TabBar(
               isScrollable: false,

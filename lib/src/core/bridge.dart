@@ -71,6 +71,7 @@ class PiarCore {
 
   bool available = false;
   String? libraryPath;
+  String? lastError;
 
   late final ffi.DynamicLibrary _lib;
   late final int Function(ffi.Pointer<ffi.Uint8>) _piarInit;
@@ -99,14 +100,40 @@ class PiarCore {
   Future<void> init() => _initFuture ??= _doInit();
 
   Future<void> _doInit() async {
-    if (available) return;
-    final path = Platform.isAndroid ? 'libpiarcore.so' : _findLibrary();
-    if (path == null) {
-      available = false;
-      return;
+    if (Platform.isAndroid) {
+      // libpiarcore.so предзагружается в MainActivity (System.loadLibrary);
+      // dlopen по имени резолвится из nativeLibraryDir приложения.
+      try {
+        _lib = ffi.DynamicLibrary.open('libpiarcore.so');
+        libraryPath = 'libpiarcore.so';
+      } catch (e) {
+        lastError = 'по имени: $e';
+        try {
+          const ch = MethodChannel('piarapk/paths');
+          final dir = await ch.invokeMethod<String>('getNativeLibraryDir');
+          if (dir != null && dir.isNotEmpty) {
+            _lib = ffi.DynamicLibrary.open('$dir/libpiarcore.so');
+            libraryPath = '$dir/libpiarcore.so';
+            lastError = null;
+          }
+        } catch (e2) {
+          lastError = 'libpiarcore.so не загрузилась ($e | $e2)';
+        }
+        if (lastError != null) {
+          available = false;
+          return;
+        }
+      }
+    } else {
+      final path = _findLibrary();
+      if (path == null) {
+        lastError = 'библиотека не найдена рядом с приложением';
+        available = false;
+        return;
+      }
+      libraryPath = path;
+      _lib = ffi.DynamicLibrary.open(path);
     }
-    libraryPath = path;
-    _lib = ffi.DynamicLibrary.open(path);
 
     _piarInit = _lib
         .lookupFunction<

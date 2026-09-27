@@ -74,7 +74,11 @@ workflows:
           cargo ndk -t arm64-v8a -t armeabi-v7a \
             -o ../android/app/src/main/jniLibs \
             build --release
-          ls -laR ../android/app/src/main/jniLibs/ || true
+          # ЖЁСТКАЯ ПРОВЕРКА: без .so сборка обязана упасть, а не молча
+          # выпустить APK без ядра
+          test -f ../android/app/src/main/jniLibs/arm64-v8a/libpiarcore.so || { echo "ОШИБКА: libpiarcore.so (arm64-v8a) не собралась"; exit 1; }
+          test -f ../android/app/src/main/jniLibs/armeabi-v7a/libpiarcore.so || { echo "ОШИБКА: libpiarcore.so (armeabi-v7a) не собралась"; exit 1; }
+          ls -laR ../android/app/src/main/jniLibs/
 
       - name: Flutter pub get
         script: flutter pub get
@@ -84,5 +88,13 @@ workflows:
 
       - name: Build APK
         script: flutter build apk --release
+
+      - name: Verify APK contains libpiarcore.so
+        script: |
+          set -e
+          APK=build/app/outputs/flutter-apk/app-release.apk
+          unzip -l "$APK" | grep "lib/arm64-v8a/libpiarcore.so" || { echo "ОШИБКА: в APK нет libpiarcore.so (arm64-v8a)!"; exit 1; }
+          unzip -l "$APK" | grep "lib/armeabi-v7a/libpiarcore.so" || { echo "ОШИБКА: в APK нет libpiarcore.so (armeabi-v7a)!"; exit 1; }
+          echo "APK содержит libpiarcore.so в обоих ABI ✓"
     artifacts:
       - build/app/outputs/flutter-apk/app-release.apk
