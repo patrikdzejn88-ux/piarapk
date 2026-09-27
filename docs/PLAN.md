@@ -5,7 +5,8 @@
 
 ## Стек (зафиксировано исследованиями 27.09.2026)
 
-- Flutter desktop (macOS — релиз, Windows — dev) — UI, локальная БД (drift/sqlite)
+- Flutter (Android APK — релиз; Windows — дев-скрипт) — UI, локальная БД (drift/sqlite)
+  - таргеты: **Android + Windows** (мобильное приложение + десктоп для Windows)
 - Rust-ядро: grammers (MTProto, автор Telethon) через flutter_rust_bridge 2.x
   - почему: TDLib не умеет импорт чужих сессий/tdata (проверено по официальным докам),
     pure-Dart MTProto-клиенты незрелые; grammers — layer 229, SRP-2FA,

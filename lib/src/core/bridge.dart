@@ -4,6 +4,7 @@ import 'dart:ffi' as ffi;
 import 'dart:io';
 
 import 'package:ffi/ffi.dart';
+import 'package:flutter/services.dart';
 
 /// Результат вызова ядра (синхронного или асинхронного).
 class PiarResult {
@@ -66,6 +67,8 @@ class PiarCore {
 
   static final PiarCore instance = PiarCore._();
 
+  static const _pathsChannel = MethodChannel('piarapk/paths');
+
   bool available = false;
   String? libraryPath;
 
@@ -92,7 +95,7 @@ class PiarCore {
   /// Инициализация: найти библиотеку, забиндить функции, запустить поллер.
   Future<void> init() async {
     if (available) return;
-    final path = _findLibrary();
+    final path = Platform.isAndroid ? 'libpiarcore.so' : _findLibrary();
     if (path == null) {
       available = false;
       return;
@@ -125,7 +128,17 @@ class PiarCore {
     _piarShutdown = _lib.lookupFunction<
         ffi.Void Function(), void Function()>('piar_shutdown');
 
-    final dataDir = Directory('data');
+    String? dataDirPath;
+    if (Platform.isAndroid) {
+      try {
+        dataDirPath =
+            await _pathsChannel.invokeMethod<String>('getFilesDir');
+      } catch (_) {
+        dataDirPath = null;
+      }
+      dataDirPath ??= '/data/data/com.piarkapk.piarapk/files';
+    }
+    final dataDir = Directory(dataDirPath ?? 'data');
     if (!dataDir.existsSync()) {
       dataDir.createSync(recursive: true);
     }
@@ -143,7 +156,7 @@ class PiarCore {
     });
   }
 
-  /// Поиск нативной библиотеки рядом с исполняемым файлом.
+  /// Поиск нативной библиотеки рядом с исполняемым файлом (desktop).
   String? _findLibrary() {
     final exe = File(Platform.resolvedExecutable);
     final dir = exe.parent.path;

@@ -1,15 +1,17 @@
 workflows:
-  macos-release:
-    name: Flutter macOS desktop
+  android-release:
+    name: Flutter Android (APK)
     instance_type: mac_mini_m2
     max_build_duration: 60
     environment:
       flutter: 3.47.5
-      xcode: latest
+      vars:
+        NDK_VERSION: 27.0.12077973
     cache:
       cache_paths:
         - $FLUTTER_ROOT/.pub-cache
         - ~/.cargo
+        - ~/.android
         - rust/target
     triggering:
       events:
@@ -20,29 +22,35 @@ workflows:
           source: true
       cancel_previous_builds: true
     scripts:
-      - name: Install Rust toolchain
+      - name: Install Rust + cargo-ndk
         script: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
           source "$HOME/.cargo/env"
-          cargo --version
-          rustc --version
-      - name: Flutter pub get
-        script: flutter pub get
+          cargo install cargo-ndk --locked
+      - name: Accept Android SDK licenses
+        script: | 
+          yes | sdkmanager --licenses > /dev/null || true
+      - name: Install Android NDK
+        script: |
+          sdkmanager "ndk;$NDK_VERSION" > /dev/null
       - name: Rust unit tests
         script: |
           source "$HOME/.cargo/env"
           cargo test --manifest-path rust/Cargo.toml
-      - name: Flutter analyze
-        script: flutter analyze
-      - name: Build macOS (.app)
+      - name: Build Rust .so for Android (jniLibs)
         script: |
           source "$HOME/.cargo/env"
-          flutter config --enable-macos-desktop
-          flutter build macos --release
-      - name: Zip .app
-        script: |
-          cd build/macos/Build/Products/Release
-          zip -qry "$CM_BUILD_DIR/piarapk-macos.zip" *.app
+          export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
+          export NDK_HOME="$ANDROID_NDK_HOME"
+          cargo ndk -t arm64-v8a -t armeabi-v7a \
+            -o android/app/src/main/jniLibs \
+            build --release --manifest-path rust/Cargo.toml
+          ls -la android/app/src/main/jniLibs/*/
+      - name: Flutter pub get
+        script: flutter pub get
+      - name: Flutter analyze
+        script: flutter analyze
+      - name: Build APK
+        script: flutter build apk --release
     artifacts:
-      - build/macos/Build/Products/Release/*.app
-      - piarapk-macos.zip
+      - build/app/outputs/flutter-apk/app-release.apk

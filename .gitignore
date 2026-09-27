@@ -50,6 +50,9 @@ app.*.map.json
 rust/target/
 rust/.env
 
+# Android: собранные cargo-ndk нативные библиотеки
+android/app/src/main/jniLibs/
+
 # Secrets & runtime data — NEVER commit
 .env
 *.session
