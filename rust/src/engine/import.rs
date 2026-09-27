@@ -1,5 +1,6 @@
-//! Импорт аккаунтов: StringSession / tdata → сессия SqliteSession.
+//! Импорт аккаунтов: StringSession / tdata → сессия SqliteSession → аккаунт.
 
+use std::collections::HashSet;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::{Path, PathBuf};
 
@@ -9,22 +10,22 @@ use grammers_session::SessionData;
 use super::connect;
 use super::state::{AccountEntry, AppState, LiveAccount};
 use super::store::AccountRecord;
-use super::tdata::{self, TdataInfo};
-
+use super::tdata;
 use super::sessions::StringSessionData;
 
 /// Создать файл сессии из auth_key + dc (штатный путь через SessionData).
 /// Возвращает путь к файлу sqlite-сессии.
 pub async fn create_session_file(
-    sessions_dir: &std::path::Path,
-    id: &str,
+    sessions_dir: &Path,
+    stem: &str,
     dc: i32,
     auth_key: [u8; 256],
     ip: &str,
 ) -> anyhow::Result<PathBuf> {
     tokio::fs::create_dir_all(sessions_dir).await?;
-    let path = sessions_dir.join(format!("{id}.sqlite"));
+    let path = sessions_dir.join(format!("{stem}.sqlite"));
     if path.exists() {
+        // чужой файл не трогаем: stem выбирается с учётом занятых имён
         tokio::fs::remove_file(&path).await?;
     }
 
@@ -48,35 +49,66 @@ pub async fn create_session_file(
     Ok(path)
 }
 
-/// Импорт telethon/gramjs StringSession → файл сессии.
-pub async fn import_string_session(
-    sessions_dir: &std::path::Path,
+/// Уникальный stem файла сессии: не должен совпадать с session_file живых
+/// аккаунтов (иначе повторный импорт удалит сессию подключённого клиента).
+pub fn unique_stem(state: &AppState, base: &str) -> String {
+    let used: HashSet<String> = {
+        let accounts = state.accounts.read();
+        accounts
+            .values()
+            .map(|e| e.record.session_file.clone())
+            .collect()
+    };
+    let mut stem = base.to_string();
+    let mut i = 0u32;
+    loop {
+        if !used.contains(&format!("{stem}.sqlite")) {
+            return stem;
+        }
+        i += 1;
+        stem = format!("{base}_{i}");
+    }
+}
+
+/// Импорт telethon/gramjs StringSession до конца: файл → подключение → аккаунт.
+pub async fn import_session_to_account(
+    state: &AppState,
+    pool: &str,
     session_string: &str,
-) -> anyhow::Result<(PathBuf, StringSessionData)> {
+    api_id: Option<i32>,
+) -> anyhow::Result<serde_json::Value> {
     let parsed = StringSessionData::decode(session_string)?;
-    let id = short_key_hash(session_string);
+    let base = short_key_hash(session_string);
+    let stem = unique_stem(state, &base);
     let path = create_session_file(
-        sessions_dir,
-        &id,
+        &state.sessions_dir(),
+        &stem,
         parsed.dc_id,
         parsed.auth_key,
         &parsed.ip,
     )
     .await?;
-    Ok((path, parsed))
+    finalize_import(state, pool, &path, api_id).await
 }
 
-/// Импорт zip-архива tdata → файл сессии.
-pub async fn import_tdata_zip(
-    sessions_dir: &std::path::Path,
-    zip_path: &std::path::Path,
-) -> anyhow::Result<(PathBuf, TdataInfo)> {
-    let tmp = tempfile::tempdir()?;
+/// Импорт tdata-архива до конца: распаковка → сессия → подключение → аккаунт.
+/// Временный каталог — ВНУТРИ data_dir (на Android системный /tmp недоступен).
+pub async fn import_tdata_to_account(
+    state: &AppState,
+    pool: &str,
+    zip_path: &str,
+) -> anyhow::Result<serde_json::Value> {
+    let tmp_root = state.data_dir.join("tmp");
+    tokio::fs::create_dir_all(&tmp_root).await?;
+    let tmp = tempfile::Builder::new()
+        .prefix("tdata_")
+        .tempdir_in(&tmp_root)?;
+
     let file = std::fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file)?;
 
-    // Найти внутри запись, заканчивающуюся на tdata/key_data0 (или key_data1/s)
-    let mut tdata_dir: Option<std::path::PathBuf> = None;
+    // Найти внутри запись, заканчивающуюся на tdata/key_data* (или tdata\...)
+    let mut tdata_dir: Option<PathBuf> = None;
     for i in 0..archive.len() {
         let name = archive.by_index(i)?.name().to_string();
         let norm = name.replace('\\', "/");
@@ -88,55 +120,22 @@ pub async fn import_tdata_zip(
             break;
         }
     }
-    // распаковать всё
     archive.extract(tmp.path())?;
     let dir = tdata_dir.ok_or_else(|| {
         anyhow::anyhow!("в архиве не найдена папка tdata (ожидался key_data внутри)")
     })?;
 
     let info = tdata::parse_tdata(&dir)?;
-    let id = format!("tdata{}", info.user_id);
+    let base = format!("tdata{}", info.user_id);
+    let stem = unique_stem(state, &base);
     let path = create_session_file(
-        sessions_dir,
-        &id,
+        &state.sessions_dir(),
+        &stem,
         info.main_dc,
         info.auth_key,
         &info.ip,
     )
     .await?;
-    Ok((path, info))
-}
-
-/// Короткий хеш строки для именования временных файлов.
-pub fn short_key_hash(s: &str) -> String {
-    use sha1::Digest as _;
-    let mut h = sha1::Sha1::new();
-    h.update(s.as_bytes());
-    let digest = h.finalize();
-    hex::encode(&digest[..6])
-}
-
-/// Импорт StringSession до конца: файл сессии → подключение → аккаунт в пуле.
-pub async fn import_session_to_account(
-    state: &AppState,
-    pool: &str,
-    session_string: &str,
-    api_id: Option<i32>,
-) -> anyhow::Result<serde_json::Value> {
-    let sessions_dir = state.sessions_dir();
-    let (path, _parsed) = import_string_session(&sessions_dir, session_string).await?;
-    finalize_import(state, pool, &path, api_id).await
-}
-
-/// Импорт tdata-архива до конца: распаковка → сессия → подключение → аккаунт.
-pub async fn import_tdata_to_account(
-    state: &AppState,
-    pool: &str,
-    zip_path: &str,
-) -> anyhow::Result<serde_json::Value> {
-    let sessions_dir = state.sessions_dir();
-    let (path, _info) =
-        import_tdata_zip(&sessions_dir, Path::new(zip_path)).await?;
     finalize_import(state, pool, &path, None).await
 }
 
@@ -193,6 +192,15 @@ async fn finalize_import(
     }
     connect::save_accounts_state(state);
     Ok(serde_json::json!({ "account_id": id, "stage": "done" }))
+}
+
+/// Короткий хеш строки для именования файлов сессий.
+pub fn short_key_hash(s: &str) -> String {
+    use sha1::Digest as _;
+    let mut h = sha1::Sha1::new();
+    h.update(s.as_bytes());
+    let digest = h.finalize();
+    hex::encode(&digest[..6])
 }
 
 fn now_secs() -> i64 {

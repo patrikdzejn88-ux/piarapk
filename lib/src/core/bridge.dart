@@ -92,8 +92,13 @@ class PiarCore {
   /// Широковещательный поток событий ядра (result/progress/log).
   Stream<PiarEvent> get events => _events.stream;
 
-  /// Инициализация: найти библиотеку, забиндить функции, запустить поллер.
-  Future<void> init() async {
+  static Future<void>? _initFuture;
+
+  /// Инициализация (идемпотентна: параллельные вызовы дают один и тот же
+  /// Future — один поллер, одна загрузка библиотеки).
+  Future<void> init() => _initFuture ??= _doInit();
+
+  Future<void> _doInit() async {
     if (available) return;
     final path = Platform.isAndroid ? 'libpiarcore.so' : _findLibrary();
     if (path == null) {

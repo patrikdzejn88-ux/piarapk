@@ -59,7 +59,9 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
     try {
       await action();
     } catch (e) {
-      setState(() => _error = e.toString());
+      if (mounted) {
+        setState(() => _error = e.toString());
+      }
     } finally {
       if (mounted) {
         setState(() => _busy = false);
@@ -68,6 +70,7 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
   }
 
   void _fail(String message) {
+    if (!mounted) return;
     setState(() {
       _busy = false;
       _error = message;

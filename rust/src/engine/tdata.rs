@@ -287,10 +287,11 @@ pub fn parse_tdata(tdata_dir: &Path) -> Result<TdataInfo, TdataError> {
     let inner = br.read_buffer()?.to_vec();
     let mut decrypted = decrypt_ige(&inner, &key)?;
 
-    // длина-заголовок (LE i32) — только валидация
+    // длина-заголовок (LE i32, одно чтение 4 байта) — только валидация
     {
         let mut mr = Reader::new(&decrypted);
-        let len = i32::from_le_bytes([mr.read(4)?[0], mr.read(4)?[0], mr.read(4)?[0], mr.read(4)?[0]]);
+        let b = mr.read(4)?;
+        let len = i32::from_le_bytes([b[0], b[1], b[2], b[3]]);
         if len as usize > decrypted.len() || len < 4 {
             return Err(TdataError::Malformed("wrong length в зашифрованном файле"));
         }
@@ -331,15 +332,20 @@ pub fn parse_tdata(tdata_dir: &Path) -> Result<TdataInfo, TdataError> {
     Err(TdataError::NoMainDcKey)
 }
 
-/// Открыть первый существующий TDF$-файл из вариантов name+0/1/s.
+/// Открыть первый ВАЛИДНЫЙ TDF$-файл из вариантов name+0/1/s (эталон
+/// перебирает все, а не падает на первом битом).
 fn open_tdf_first(prefix: &Path) -> Result<Vec<u8>, TdataError> {
+    let mut last_err = None;
     for suffix in ["0", "1", "s"] {
         let p = Path::new(&format!("{}{}", prefix.display(), suffix));
         if p.exists() {
-            return open_tdf(p);
+            match open_tdf(p) {
+                Ok(payload) => return Ok(payload),
+                Err(e) => last_err = Some(e),
+            }
         }
     }
-    Err(TdataError::NotFound(format!("{}0/1/s", prefix.display())))
+    Err(last_err.unwrap_or_else(|| TdataError::NotFound(format!("{}0/1/s", prefix.display()))))
 }
 
 #[cfg(test)]

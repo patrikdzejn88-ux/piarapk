@@ -1,20 +1,24 @@
 //! Инвайт-движок: базы usernames → чат, батчами, с ротацией аккаунтов и
-//! обработкой FLOOD_WAIT / PEER_FLOOD (порт логики executeBroadcast из tg-piar).
+//! обработкой FLOOD_WAIT / PEER_FLOOD (адаптация executeBroadcast из tg-piar).
 
 use grammers_client::client::Client;
 use grammers_session::types::PeerRef;
 
 use super::state::AppState;
-use super::store::{self, UserDatabase};
+use super::store::UserDatabase;
 
 /// Размер батча юзеров на один channels.inviteToChannel.
 const INVITE_BATCH: usize = 10;
 
-/// Точка входа: invite_start { chat_id, database, per_account, batch_pause_ms }.
+/// Пауза между батчами внутри одного аккаунта (мс), как фолбэк эталона.
+const BATCH_PAUSE_MS: u64 = 2000;
+
+/// Точка входа: invite_start { chat_id, database, message, per_account, batch_pause_ms }.
 pub async fn invite_start(
     state: &AppState,
     chat_id: i64,
     database: &str,
+    message: &str,
     per_account: usize,
     batch_pause_ms: u64,
 ) -> Result<serde_json::Value, serde_json::Value> {
@@ -24,7 +28,7 @@ pub async fn invite_start(
     })?;
     let chat_peer: PeerRef = super::chats::chat_peer_ref(&chat)
         .map_err(|e| super::auth::err_json("ERROR", e.to_string()))?;
-    let input_channel = (&chat_peer).into();
+    let input_channel: grammers_tl_types::enums::InputChannel = (&chat_peer).into();
 
     // база usernames
     let db_path = UserDatabase::path_for(&state.dbs_dir(), database);
@@ -45,7 +49,7 @@ pub async fn invite_start(
     }
 
     // подключённые пиар-аккаунты
-    let clients = super::connect::connected_clients(state, "piar");
+    let mut clients = super::connect::connected_clients(state, "piar");
     if clients.is_empty() {
         return Err(super::auth::err_json(
             "NO_ACCOUNTS",
@@ -59,13 +63,12 @@ pub async fn invite_start(
     let mut invited = 0usize;
     let mut failed = 0usize;
     let mut restricted_accounts: Vec<String> = Vec::new();
-    let mut account_round = 0usize;
 
-    let mut report = serde_json::json!({ "total": total });
-
+    // круги, пока есть очередь и живые аккаунты
     while !queue.is_empty() && !clients.is_empty() {
-        // один «сет» = per_account юзеров одним аккаунтом
-        for (acc_idx, (acc_id, client)) in clients.iter().enumerate() {
+        let mut round_restricted: Vec<String> = Vec::new();
+
+        for (acc_id, client) in &clients {
             if queue.is_empty() {
                 break;
             }
@@ -78,7 +81,8 @@ pub async fn invite_start(
                     .collect();
 
                 // разрешить usernames → InputUser (кэширует сессия клиента)
-                let mut users = Vec::with_capacity(batch.len());
+                let mut users: Vec<grammers_tl_types::enums::InputUser> =
+                    Vec::with_capacity(batch.len());
                 let mut unresolved = 0usize;
                 for username in &batch {
                     match client.resolve_username(username).await {
@@ -104,46 +108,43 @@ pub async fn invite_start(
                     users,
                 };
 
-                match client.invoke(&request).await {
+                let outcome = client.invoke(&request).await;
+                match outcome {
                     Ok(_) => {
                         invited += batch.len() - unresolved;
                         failed += unresolved;
                     }
-                    Err(e) => {
-                        // PEER_FLOOD: аккаунт в карантин
-                        if e.is("PEER_FLOOD") {
-                            restricted_accounts.push(acc_id.clone());
-                            // вернуть юзеров в очередь и выйти с этого аккаунта
-                            for u in &batch {
-                                queue.push(u.clone());
-                            }
-                            break;
+                    Err(e) if e.is("PEER_FLOOD") => {
+                        // аккаунт-wide флуд: в карантин, юзеров возвращаем,
+                        // переходим к следующему аккаунту
+                        round_restricted.push(acc_id.clone());
+                        for u in &batch {
+                            queue.push(u.clone());
                         }
-                        // FLOOD_WAIT: пережидаем value секунд и ретраим батч один раз
-                        if e.is("FLOOD_WAIT") {
-                            let secs = flood_wait_secs(&e).unwrap_or(30);
-                            state.progress(
-                                "invite_start",
-                                serde_json::json!({
-                                    "note": format!("FLOOD_WAIT {secs}s — ждём"),
-                                    "done": invited,
-                                    "failed": failed,
-                                    "current_account": acc_id,
-                                }),
-                            );
-                            tokio::time::sleep(std::time::Duration::from_secs(secs.min(300))).await;
-                            match client.invoke(&request).await {
-                                Ok(_) => {
-                                    invited += batch.len() - unresolved;
-                                    failed += unresolved;
-                                }
-                                Err(_) => {
-                                    failed += batch.len();
-                                }
+                        break;
+                    }
+                    Err(e) if e.is("FLOOD_WAIT") => {
+                        let secs = flood_wait_secs(&e).unwrap_or(30).min(300);
+                        state.progress(
+                            "invite_start",
+                            serde_json::json!({
+                                "note": format!("FLOOD_WAIT {secs}s — ждём"),
+                                "done": invited,
+                                "failed": failed,
+                                "current_account": acc_id,
+                            }),
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+                        match client.invoke(&request).await {
+                            Ok(_) => {
+                                invited += batch.len() - unresolved;
+                                failed += unresolved;
                             }
-                        } else {
-                            failed += batch.len();
+                            Err(_) => failed += batch.len(),
                         }
+                    }
+                    Err(_) => {
+                        failed += batch.len();
                     }
                 }
 
@@ -157,28 +158,43 @@ pub async fn invite_start(
                         "current_account": acc_id,
                     }),
                 );
-            }
 
-            if queue.is_empty() {
-                break;
-            }
-            // пауза между аккаунтами/сетами
-            if acc_idx + 1 < clients.len() {
-                tokio::time::sleep(std::time::Duration::from_millis(batch_pause_ms)).await;
+                // пауза между батчами
+                tokio::time::sleep(std::time::Duration::from_millis(BATCH_PAUSE_MS)).await;
             }
         }
 
-        // отбрасываем карантинные аккаунты из списка на следующий круг
-        if !restricted_accounts.is_empty() {
-            account_round += 1;
-            let _ = account_round;
-            break_with_restricted(state, &restricted_accounts);
-            break;
+        // применяем карантин круга и продолжаем оставшимися аккаунтами
+        if !round_restricted.is_empty() {
+            restricted_accounts.extend(round_restricted.iter().cloned());
+            quarantine_accounts(state, &round_restricted);
+            clients.retain(|(id, _)| !round_restricted.contains(id));
+            if clients.is_empty() {
+                break;
+            }
+        }
+
+        // пауза между кругами
+        if !queue.is_empty() && !clients.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(batch_pause_ms)).await;
         }
     }
 
-    report["invited"] = serde_json::json!(invited);
-    report["failed"] = serde_json::json!(failed);
+    let mut report = serde_json::json!({
+        "total": total,
+        "invited": invited,
+        "failed": failed,
+        "remaining": queue.len(),
+    });
+
+    // сообщение в чат после инвайтов (как в executeBroadcast эталона)
+    if !message.trim().is_empty() && !clients.is_empty() {
+        match super::chats::post_message(state, chat_id, message).await {
+            Ok(_) => report["message_sent"] = serde_json::json!(true),
+            Err(e) => report["message_error"] = serde_json::json!(e.to_string()),
+        }
+    }
+
     if !restricted_accounts.is_empty() {
         report["restricted_accounts"] = serde_json::json!(restricted_accounts);
     }
@@ -196,7 +212,7 @@ fn flood_wait_secs(e: &grammers_client::InvocationError) -> Option<u64> {
 }
 
 /// Пометить аккаунты ограниченными (карантин) и сохранить реестр.
-fn break_with_restricted(state: &AppState, ids: &[String]) {
+fn quarantine_accounts(state: &AppState, ids: &[String]) {
     {
         let mut accounts = state.accounts.write();
         for id in ids {

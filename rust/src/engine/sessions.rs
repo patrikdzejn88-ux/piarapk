@@ -61,9 +61,9 @@ impl StringSessionData {
             let addr_len = i16::from_be_bytes([bytes[pos], bytes[pos + 1]]) as i32;
             pos += 2;
             if addr_len > 100 {
-                // IPv6: 16 байт «сырые» (gramjs пишет hex-строкой, но длина >100
-                // трактуется как ipv6-маркер — на практике gramjs всегда пишет
-                // адрес строкой, поэтому здесь безопасный путь: читаем 16 байт).
+                // IPv6: грамjs отматывает offset на 2 (16 байт начинаются с места
+                // ПОЛЯ ДЛИНЫ, а не после него) — StringSession.js:51 reader.offset -= 2
+                pos -= 2;
                 need(16, pos, bytes.len())?;
                 let mut s = String::new();
                 for (i, b) in bytes[pos..pos + 16].iter().enumerate() {

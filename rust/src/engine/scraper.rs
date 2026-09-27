@@ -118,8 +118,8 @@ pub async fn parse_start(
     mode: &str,
     limit: usize,
 ) -> Result<serde_json::Value, serde_json::Value> {
-    // парсер работает ТОЛЬКО на пуле «parser»
-    let Some(client) = super::connect::connected_client(state, Some("parser")) else {
+    // парсер работает ТОЛЬКО на пуле «parser» (строгая изоляция, без fallback)
+    let Some(client) = super::connect::connected_client_strict(state, "parser") else {
         return Err(super::auth::err_json(
             "NO_PARSER_ACCOUNTS",
             "нет подключённых аккаунтов в пуле «Парсер» — добавьте/подключите",

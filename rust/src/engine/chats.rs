@@ -28,7 +28,7 @@ pub async fn resolve_chat(state: &AppState, link: &str) -> anyhow::Result<Peer> 
     if username.is_empty() {
         return Err(anyhow::anyhow!("пустая ссылка на чат"));
     }
-    let Some(client) = super::connect::connected_client(state, None) else {
+    let Some(client) = super::connect::connected_client(state, "piar") else {
         return Err(anyhow::anyhow!("нет подключённых аккаунтов — подключите хотя бы один"));
     };
     // resolve_username возвращает Option<Peer>
@@ -40,8 +40,9 @@ pub async fn resolve_chat(state: &AppState, link: &str) -> anyhow::Result<Peer> 
     Ok(peer)
 }
 
-/// Peer → (dialog_id, access_hash, title).
-pub async fn peer_to_record(peer: &Peer) -> anyhow::Result<(i64, i64, String)> {
+/// Добавить чат в реестр (с подсчётом участников).
+pub async fn add_chat(state: &AppState, link: &str) -> anyhow::Result<serde_json::Value> {
+    let peer = resolve_chat(state, link).await?;
     let peer_ref = peer
         .to_ref()
         .await
@@ -53,18 +54,19 @@ pub async fn peer_to_record(peer: &Peer) -> anyhow::Result<(i64, i64, String)> {
         .ok_or_else(|| anyhow::anyhow!("unsupported peer kind"))?;
     let access_hash = peer_ref.auth.hash();
     let title = peer.name().unwrap_or("без названия").to_string();
-    Ok((dialog_id, access_hash, title))
-}
 
-/// Добавить чат в реестр.
-pub async fn add_chat(state: &AppState, link: &str) -> anyhow::Result<serde_json::Value> {
-    let peer = resolve_chat(state, link).await?;
-    let (dialog_id, access_hash, title) = peer_to_record(&peer).await?;
+    // количество участников (для UI)
+    let mut members: i64 = 0;
+    if let Some(client) = super::connect::connected_client(state, "piar") {
+        let mut it = client.iter_participants(peer_ref);
+        members = it.total().await.unwrap_or(0) as i64;
+    }
+
     let record = ChatRecord {
         dialog_id,
         access_hash,
         title,
-        members: 0,
+        members,
         added_at: now_secs(),
     };
     let mut chats = state.chats.lock();
@@ -121,7 +123,7 @@ pub async fn post_message(
     let record = find_chat(state, chat_id)
         .ok_or_else(|| anyhow::anyhow!("чат не найден: {chat_id}"))?;
     let peer_ref = chat_peer_ref(&record)?;
-    let Some(client) = super::connect::connected_client(state, None) else {
+    let Some(client) = super::connect::connected_client(state, "piar") else {
         return Err(anyhow::anyhow!("нет подключённых аккаунтов"));
     };
     client
@@ -137,7 +139,7 @@ pub async fn create_readonly_channel(
     title: &str,
     about: &str,
 ) -> anyhow::Result<serde_json::Value> {
-    let Some(client) = super::connect::connected_client(state, None) else {
+    let Some(client) = super::connect::connected_client(state, "piar") else {
         return Err(anyhow::anyhow!("нет подключённых аккаунтов"));
     };
     let request = grammers_tl_types::functions::channels::CreateChannel {

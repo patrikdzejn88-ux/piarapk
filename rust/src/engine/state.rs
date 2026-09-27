@@ -21,7 +21,12 @@ pub struct EventQueue {
 
 impl EventQueue {
     pub fn push(&self, event_json: String) {
-        self.queue.lock().push_back(event_json);
+        let mut q = self.queue.lock();
+        q.push_back(event_json);
+        // защита от переполнения, если поллер Dart надолго встал (бэкграунд)
+        if q.len() > 2000 {
+            q.pop_front();
+        }
     }
 
     /// Забрать все накопленные события (JSON-массив).
@@ -56,6 +61,8 @@ pub struct PendingAuth {
     pub _handle: SenderPoolFatHandle,
     pub login_token: LoginToken,
     pub password_token: Option<PasswordToken>,
+    /// Имя файла сессии (в sessions/) — фиксируется при создании попытки.
+    pub session_file: String,
 }
 
 /// Глобальное состояние ядра.

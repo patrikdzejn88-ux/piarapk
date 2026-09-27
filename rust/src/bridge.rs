@@ -238,9 +238,10 @@ async fn dispatch_async(
         "invite_start" => {
             let chat_id = params.get("chat_id").and_then(|v| v.as_i64()).unwrap_or_default();
             let database = str_param(params, "database", "");
+            let message = str_param(params, "message", "");
             let per_account = params.get("per_account").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
             let pause = params.get("batch_pause_ms").and_then(|v| v.as_u64()).unwrap_or(5000);
-            inviter::invite_start(app, chat_id, &database, per_account, pause).await
+            inviter::invite_start(app, chat_id, &database, &message, per_account, pause).await
         }
         other => Err(auth::err_json(
             "UNKNOWN_METHOD",
@@ -267,12 +268,15 @@ fn map_anyhow(
     r.map_err(|e| auth::err_json("ERROR", e.to_string()))
 }
 
-/// Удалить аккаунт: запись + live; файл сессии оставляем (безопасность данных).
+/// Удалить аккаунт: запись, live-клиент и файл сессии.
 fn delete_account(app: &Arc<AppState>, id: &str) -> anyhow::Result<()> {
     let _ = connect::disconnect_account(app, id).await;
-    {
+    let session_file = {
         let mut accounts = app.accounts.write();
-        accounts.remove(id);
+        accounts.remove(id).map(|e| e.record.session_file)
+    };
+    if let Some(f) = session_file {
+        let _ = std::fs::remove_file(app.sessions_dir().join(f));
     }
     connect::save_accounts_state(app);
     Ok(())

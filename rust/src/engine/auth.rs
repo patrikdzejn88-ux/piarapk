@@ -11,18 +11,34 @@ use super::connect::save_accounts_state;
 use super::state::{AccountEntry, AppState, LiveAccount, PendingAuth};
 
 /// Отправить код на телефон (создаёт временную сессию и PendingAuth).
+/// Повторный вызов гасит прошлую попытку и отправляет НОВЫЙ код.
 pub async fn add_account_phone(
     state: &AppState,
     pool: &str,
     phone: &str,
 ) -> anyhow::Result<serde_json::Value> {
-    if state.pending_auths.lock().contains_key(phone) {
-        return Ok(serde_json::json!({ "stage": "code" }));
+    // погасить прошлую попытку (тот же телефон)
+    if let Some(old) = state.pending_auths.lock().remove(phone) {
+        let mut p = old.lock().await;
+        p._handle.quit();
+        let file = p.session_file.clone();
+        let still_used = {
+            let accounts = state.accounts.read();
+            accounts
+                .values()
+                .any(|e| e.record.session_file == file)
+        };
+        if !still_used {
+            let _ = tokio::fs::remove_file(state.sessions_dir().join(&file)).await;
+        }
     }
+
     let sessions_dir = state.sessions_dir();
     tokio::fs::create_dir_all(&sessions_dir).await?;
-    let file_id = super::import::short_key_hash(&format!("{pool}:{phone}"));
-    let session_path = sessions_dir.join(format!("pending_{file_id}.sqlite"));
+    let base = super::import::short_key_hash(&format!("{pool}:{phone}"));
+    let stem = super::import::unique_stem(state, &format!("pending_{base}"));
+    let session_file = format!("{stem}.sqlite");
+    let session_path = sessions_dir.join(&session_file);
     if session_path.exists() {
         let _ = tokio::fs::remove_file(&session_path).await;
     }
@@ -63,6 +79,7 @@ pub async fn add_account_phone(
             _handle: handle,
             login_token,
             password_token: None,
+            session_file: session_file.clone(),
         })),
     );
     Ok(serde_json::json!({ "stage": "code" }))
@@ -144,9 +161,8 @@ async fn finalize_login(
     let last_name = user.last_name().unwrap_or_default().to_string();
     let username = user.username().unwrap_or_default().to_string();
 
-    // файл сессии: pending_<hash> → фиксируем в записи
-    let file_id = super::import::short_key_hash(&format!("{}:{}", p.pool, p.phone));
-    let session_file = format!("pending_{file_id}.sqlite");
+    // файл сессии: тот, что создан при add_account_phone (фиксирован в PendingAuth)
+    let session_file = p.session_file.clone();
 
     let entry = AccountEntry {
         record: super::store::AccountRecord {

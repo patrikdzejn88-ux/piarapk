@@ -58,6 +58,16 @@ pub async fn connect_account(state: &AppState, id: &str) -> anyhow::Result<serde
             .map(|e| e.record.session_file.clone())
             .ok_or_else(|| anyhow::anyhow!("аккаунт не найден: {id}"))?
     };
+    // погасить старое подключение, если было (иначе задвоение runner'ов)
+    let old_handle = {
+        let mut accounts = state.accounts.write();
+        accounts
+            .get_mut(id)
+            .and_then(|e| e.live.take().map(|l| l._handle))
+    };
+    if let Some(h) = old_handle {
+        h.quit();
+    }
     let session_path = state.sessions_dir().join(&session_file);
     let started = start_client(&session_path, state.api_id).await?;
     let authorized = started.client.is_authorized().await?;
@@ -138,27 +148,32 @@ pub fn save_accounts_state(state: &AppState) {
     let _ = store::save_accounts(&state.data_dir, &file);
 }
 
-/// Первый подключённый аккаунт из пула (или любого).
-pub fn connected_client(state: &AppState, pool: Option<&str>) -> Option<Client> {
+/// Первый подключённый аккаунт: сначала prefer-пул, затем любой
+/// (для чатов/постинга — предпочитаем пиар-аккаунты).
+pub fn connected_client(state: &AppState, prefer: &str) -> Option<Client> {
     let accounts = state.accounts.read();
-    // сначала указанный пул, затем любой
-    for pass in 0..2 {
-        for e in accounts.values() {
-            let pool_match = match pool {
-                Some(p) => e.record.pool == p,
-                None => true,
-            };
-            if pass == 1 && pool.is_some() {
-                // второй проход — любой пул (когда указанный пуст)
-                let _ = pool_match;
-                if e.live.is_some() && !e.record.restricted {
-                    return e.live.as_ref().map(|l| l.client.clone());
-                }
-                continue;
+    let mut any: Option<Client> = None;
+    for e in accounts.values() {
+        if e.live.is_some() && !e.record.restricted {
+            let c = e.live.as_ref().map(|l| l.client.clone());
+            if e.record.pool == prefer {
+                return c;
             }
-            if pool_match && e.live.is_some() && !e.record.restricted {
-                return e.live.as_ref().map(|l| l.client.clone());
+            if any.is_none() {
+                any = c;
             }
+        }
+    }
+    any
+}
+
+/// Подключённый клиент СТРОГО из указанного пула (без fallback) —
+/// для парсера (изоляция пулов).
+pub fn connected_client_strict(state: &AppState, pool: &str) -> Option<Client> {
+    let accounts = state.accounts.read();
+    for e in accounts.values() {
+        if e.record.pool == pool && e.live.is_some() && !e.record.restricted {
+            return e.live.as_ref().map(|l| l.client.clone());
         }
     }
     None
@@ -191,8 +206,11 @@ pub fn accounts_json(state: &AppState) -> serde_json::Value {
         }));
     }
     list.sort_by(|a, b| {
-        a["pool"].as_str().unwrap_or("").cmp(&b["pool"].as_str().unwrap_or(""))
-            .then(a["id"].as_str().unwrap_or("").cmp(&b["id"].as_str().unwrap_or("")))
+        let pool_a = a["pool"].as_str().unwrap_or("");
+        let pool_b = b["pool"].as_str().unwrap_or("");
+        let id_a = a["id"].as_str().unwrap_or("").parse::<i64>().unwrap_or(0);
+        let id_b = b["id"].as_str().unwrap_or("").parse::<i64>().unwrap_or(0);
+        pool_a.cmp(pool_b).then(id_a.cmp(&id_b))
     });
     serde_json::Value::Array(list)
 }
