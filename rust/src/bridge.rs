@@ -210,7 +210,7 @@ async fn dispatch_async(
         }
         "delete_account" => {
             let id = str_param(params, "id", "");
-            map_anyhow(delete_account(app, &id).map(|_| serde_json::json!({"deleted": true})))
+            map_anyhow(delete_account(app, &id).await.map(|_| serde_json::json!({"deleted": true})))
         }
         // ---- чаты ----
         "add_chat" => {
@@ -269,7 +269,7 @@ fn map_anyhow(
 }
 
 /// Удалить аккаунт: запись, live-клиент и файл сессии.
-fn delete_account(app: &Arc<AppState>, id: &str) -> anyhow::Result<()> {
+async fn delete_account(app: &Arc<AppState>, id: &str) -> anyhow::Result<()> {
     let _ = connect::disconnect_account(app, id).await;
     let session_file = {
         let mut accounts = app.accounts.write();

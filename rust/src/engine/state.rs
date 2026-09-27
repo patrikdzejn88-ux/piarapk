@@ -128,7 +128,7 @@ impl AppState {
 }
 
 /// Глобальный экземпляр состояния (инициализируется в piar_init).
-pub static STATE: once_cell::sync::OnceLock<Arc<AppState>> = once_cell::sync::OnceLock::new();
+pub static STATE: std::sync::OnceLock<Arc<AppState>> = std::sync::OnceLock::new();
 
 /// Доступ к состоянию; None до piar_init.
 pub fn state() -> Option<Arc<AppState>> {

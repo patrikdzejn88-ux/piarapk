@@ -1,7 +1,6 @@
 //! Инвайт-движок: базы usernames → чат, батчами, с ротацией аккаунтов и
 //! обработкой FLOOD_WAIT / PEER_FLOOD (адаптация executeBroadcast из tg-piar).
 
-use grammers_client::client::Client;
 use grammers_session::types::PeerRef;
 
 use super::state::AppState;

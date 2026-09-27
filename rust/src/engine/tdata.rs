@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use aes::cipher::generic_array::GenericArray;
-use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use aes::cipher::{BlockDecryptMut, KeyIvInit};
 // md5::Digest и sha1::Digest — один и тот же трейт digest::Digest, одного
 // импорта достаточно для всех хешей (md5/sha1/sha2).
 use md5::Digest as _;
@@ -353,6 +353,7 @@ fn open_tdf_first(prefix: &Path) -> Result<Vec<u8>, TdataError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aes::cipher::BlockEncryptMut;
 
     #[test]
     fn md5_name_style() {
