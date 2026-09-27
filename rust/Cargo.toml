@@ -13,6 +13,10 @@ grammers-client = "0.10"
 grammers-session = "0.10"
 grammers-mtsender = "0.10"
 grammers-tl-types = "0.10"
+# ПИН: grammers-crypto 0.10 требует glass_pumpkin ^2.0.0-rc0, но rc1
+# (02.09.2026) переехал на num-bigint 0.5 и ломает сборку grammers-crypto.
+# Фиксируем rc0 — cargo унифицирует с требованиями grammers-crypto.
+glass_pumpkin = "=2.0.0-rc0"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
