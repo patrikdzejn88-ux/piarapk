@@ -119,6 +119,16 @@ class _PiarScreenState extends State<PiarScreen> {
     _snack(res.ok ? 'Сообщение отправлено' : 'Ошибка: ${res.errorText}');
   }
 
+  Future<void> _addChat() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => const _AddChatDialog(),
+    );
+    if (ok == true) {
+      _reload();
+    }
+  }
+
   void _snack(String text) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
@@ -129,8 +139,7 @@ class _PiarScreenState extends State<PiarScreen> {
     if (!PiarCore.instance.available) {
       return const Center(child: Text('Ядро не загружено — раздел недоступен.'));
     }
-    return ListView(
-      padding: const EdgeInsets.all(16),
+    return ListView(      padding: const EdgeInsets.all(16),
       children: [
         Text('Пиар-рассылка', style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 4),
@@ -225,12 +234,152 @@ class _PiarScreenState extends State<PiarScreen> {
               label: const Text('Отправить сообщение'),
             ),
             const SizedBox(width: 8),
+            OutlinedButton.icon(
+              onPressed: _addChat,
+              icon: const Icon(Icons.add_link),
+              label: const Text('Чат'),
+            ),
+            const SizedBox(width: 8),
             IconButton(
               tooltip: 'Обновить списки',
               onPressed: () => setState(_reload),
               icon: const Icon(Icons.refresh),
             ),
           ],
+        ),
+      ],
+    );
+  }
+}
+
+/// Диалог добавления чата: существующий (@ссылка) или создание read-only канала.
+class _AddChatDialog extends StatefulWidget {
+  const _AddChatDialog();
+
+  @override
+  State<_AddChatDialog> createState() => _AddChatDialogState();
+}
+
+class _AddChatDialogState extends State<_AddChatDialog> {
+  bool _create = false;
+  bool _busy = false;
+  String? _error;
+
+  final _linkCtrl = TextEditingController();
+  final _titleCtrl = TextEditingController();
+  final _aboutCtrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _linkCtrl.dispose();
+    _titleCtrl.dispose();
+    _aboutCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final res = _create
+        ? await PiarCore.instance.callAsync('create_channel', {
+            'title': _titleCtrl.text.trim(),
+            'about': _aboutCtrl.text.trim(),
+          })
+        : await PiarCore.instance
+            .callAsync('add_chat', {'link': _linkCtrl.text.trim()});
+    if (!mounted) return;
+    if (res.ok) {
+      Navigator.pop(context, true);
+    } else {
+      setState(() {
+        _busy = false;
+        _error = res.errorText;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Чат для инвайтов'),
+      content: SizedBox(
+        width: 440,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(
+                  value: false,
+                  icon: Icon(Icons.link),
+                  label: Text('Существующий'),
+                ),
+                ButtonSegment(
+                  value: true,
+                  icon: Icon(Icons.add_circle_outline),
+                  label: Text('Создать канал'),
+                ),
+              ],
+              selected: {_create},
+              onSelectionChanged: (s) => setState(() => _create = s.first),
+            ),
+            const SizedBox(height: 12),
+            if (_create)
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: _titleCtrl,
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Название канала (read-only для подписчиков)',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _aboutCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Описание',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+              )
+            else
+              TextField(
+                controller: _linkCtrl,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'Ссылка на чат/канал',
+                  hintText: '@mychannel или https://t.me/mychannel',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            if (_error != null) ...[
+              const SizedBox(height: 8),
+              Text(_error!, style: const TextStyle(color: Colors.redAccent)),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _busy ? null : () => Navigator.pop(context, false),
+          child: const Text('Отмена'),
+        ),
+        FilledButton(
+          onPressed: _busy ? null : _submit,
+          child: _busy
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Добавить'),
         ),
       ],
     );

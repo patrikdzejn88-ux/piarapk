@@ -37,10 +37,10 @@ class _ShellState extends State<_Shell> {
   int _index = 0;
 
   static const _destinations = [
-    (icon: Icon(Icons.people_outline), label: 'Аккаунты'),
-    (icon: Icon(Icons.campaign_outlined), label: 'Пиар'),
-    (icon: Icon(Icons.manage_search), label: 'Парсер'),
-    (icon: Icon(Icons.shopping_bag_outlined), label: 'Магазин'),
+    (icon: Icon(Icons.people_outline), selected: Icon(Icons.people), label: 'Аккаунты'),
+    (icon: Icon(Icons.campaign_outlined), selected: Icon(Icons.campaign), label: 'Пиар'),
+    (icon: Icon(Icons.manage_search), selected: Icon(Icons.manage_search), label: 'Парсер'),
+    (icon: Icon(Icons.shopping_bag_outlined), selected: Icon(Icons.shopping_bag), label: 'Магазин'),
   ];
 
   @override
@@ -49,34 +49,58 @@ class _ShellState extends State<_Shell> {
     PiarCore.instance.init();
   }
 
+  static Widget _page(int i) => switch (i) {
+        0 => const AccountsScreen(),
+        1 => const PiarScreen(),
+        2 => const ParserScreen(),
+        _ => const ShopScreen(),
+      };
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Row(
-        children: [
-          NavigationRail(
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final wide = constraints.maxWidth >= 720;
+        final body = _page(_index);
+        if (wide) {
+          return Scaffold(
+            body: Row(
+              children: [
+                NavigationRail(
+                  selectedIndex: _index,
+                  onDestinationSelected: (i) => setState(() => _index = i),
+                  labelType: NavigationRailLabelType.all,
+                  destinations: [
+                    for (final d in _destinations)
+                      NavigationRailDestination(
+                        icon: d.icon,
+                        selectedIcon: d.selected,
+                        label: Text(d.label),
+                      ),
+                  ],
+                ),
+                const VerticalDivider(width: 1),
+                Expanded(child: body),
+              ],
+            ),
+          );
+        }
+        return Scaffold(
+          body: body,
+          bottomNavigationBar: NavigationBar(
             selectedIndex: _index,
             onDestinationSelected: (i) => setState(() => _index = i),
-            labelType: NavigationRailLabelType.all,
             destinations: [
               for (final d in _destinations)
-                NavigationRailDestination(
+                NavigationDestination(
                   icon: d.icon,
-                  label: Text(d.label),
+                  selectedIcon: d.selected,
+                  label: d.label,
                 ),
             ],
           ),
-          const VerticalDivider(width: 1),
-          Expanded(
-            child: switch (_index) {
-              0 => const AccountsScreen(),
-              1 => const PiarScreen(),
-              2 => const ParserScreen(),
-              _ => const ShopScreen(),
-            },
-          ),
-        ],
-      ),
+        );
+      },
     );
   }
 }
