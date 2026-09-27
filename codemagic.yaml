@@ -28,6 +28,10 @@ workflows:
           rustc --version
       - name: Flutter pub get
         script: flutter pub get
+      - name: Rust unit tests
+        script: |
+          source "$HOME/.cargo/env"
+          cargo test --manifest-path rust/Cargo.toml
       - name: Flutter analyze
         script: flutter analyze
       - name: Build macOS (.app)

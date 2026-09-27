@@ -213,6 +213,7 @@
 				33CC10EB2044A3C60003C045 /* Resources */,
 				33CC110E2044A8840003C045 /* Bundle Framework */,
 				3399D490228B24CF009A79C7 /* ShellScript */,
+				A7C3E9F1B2D4068A5C1E3F7B /* Build Rust Library */,
 			);
 			buildRules = (
 			);
@@ -338,6 +339,25 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "\"$FLUTTER_ROOT\"/packages/flutter_tools/bin/macos_assemble.sh && touch Flutter/ephemeral/tripwire";
+		};
+		A7C3E9F1B2D4068A5C1E3F7B /* Build Rust Library */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust Library";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "export PATH=\"$HOME/.cargo/bin:$PATH\"\nif ! command -v cargo >/dev/null 2>&1; then\n  echo \"error: cargo not found in PATH; install Rust from https://rustup.rs\" >&2\n  exit 1\nfi\ncd \"$SRCROOT/../rust\" || exit 1\ncargo build --release\nmkdir -p \"$BUILT_PRODUCTS_DIR/$PRODUCT_NAME.app/Contents/Frameworks\"\ncp -f target/release/libpiarcore.dylib \"$BUILT_PRODUCTS_DIR/$PRODUCT_NAME.app/Contents/Frameworks/\"\ncodesign --force --sign - \"$BUILT_PRODUCTS_DIR/$PRODUCT_NAME.app/Contents/Frameworks/libpiarcore.dylib\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

@@ -106,3 +106,47 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
+
+# === Rust library (piarcore) ===
+# Build the Rust crate with cargo and place the resulting cdylib next to the
+# application executable. Dart loads it at runtime via dart:ffi
+# (DynamicLibrary.open("piarcore.dll")), so there is no link-time dependency;
+# the file only needs to be present in the bundle next to piarapk.exe.
+find_program(CARGO_EXECUTABLE cargo)
+if(NOT CARGO_EXECUTABLE)
+  # rustup's default install location, used when cargo is not on PATH.
+  if(EXISTS "$ENV{USERPROFILE}/.cargo/bin/cargo.exe")
+    set(CARGO_EXECUTABLE "$ENV{USERPROFILE}/.cargo/bin/cargo.exe")
+  endif()
+endif()
+if(NOT CARGO_EXECUTABLE)
+  message(FATAL_ERROR
+    "cargo not found; install Rust from https://rustup.rs and rebuild (cargo must be on PATH or in ~/.cargo/bin)")
+endif()
+
+set(PIARCORE_MANIFEST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../rust")
+set(PIARCORE_LIBRARY "${PIARCORE_MANIFEST_DIR}/target/release/piarcore.dll")
+
+# Runs on every build; cargo itself is incremental and is cheap when nothing
+# changed. The cargo release profile is used for all Flutter build modes, which
+# keeps a single stable output path that also works with multi-config
+# generators (Visual Studio).
+add_custom_target(piarapk_rust
+  COMMAND "${CARGO_EXECUTABLE}" build --release
+    --manifest-path "${PIARCORE_MANIFEST_DIR}/Cargo.toml"
+  BYPRODUCTS "${PIARCORE_LIBRARY}"
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+  VERBATIM
+  COMMENT "Building Rust library piarcore (cargo build --release)"
+)
+add_dependencies(${BINARY_NAME} piarapk_rust)
+
+# After linking, copy the cdylib next to the executable. With multi-config
+# generators this resolves to the configuration-specific output directory
+# (for example build/windows/x64/runner/Release).
+add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${PIARCORE_LIBRARY}"
+    "$<TARGET_FILE_DIR:${BINARY_NAME}>"
+  VERBATIM
+  COMMENT "Copying piarcore.dll next to the application executable"
+)
