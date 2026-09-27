@@ -5,13 +5,10 @@ workflows:
     max_build_duration: 60
     environment:
       flutter: 3.47.5
-      vars:
-        NDK_VERSION: 27.0.12077973
     cache:
       cache_paths:
         - $FLUTTER_ROOT/.pub-cache
         - ~/.cargo
-        - ~/.android
         - rust/target
     triggering:
       events:
@@ -27,29 +24,61 @@ workflows:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
           source "$HOME/.cargo/env"
           cargo install cargo-ndk --locked
-      - name: Accept Android SDK licenses
-        script: | 
-          yes | sdkmanager --licenses > /dev/null || true
-      - name: Install Android NDK
+
+      - name: Locate Android SDK / sdkmanager
         script: |
-          sdkmanager "ndk;$NDK_VERSION" > /dev/null
+          set -e
+          export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/local/share/android-sdk}"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          # уже установленный NDK?
+          if compgen -G "$ANDROID_SDK_ROOT/ndk/*" >/dev/null; then
+            echo "NDK already present: $(ls "$ANDROID_SDK_ROOT/ndk/")"
+            exit 0
+          fi
+          # ищем sdkmanager в стандартных местах
+          SDKM=""
+          for c in cmdline-tools/latest/bin/sdkmanager cmdline-tools/bin/sdkmanager tools/bin/sdkmanager; do
+            if [ -x "$ANDROID_SDK_ROOT/$c" ]; then SDKM="$ANDROID_SDK_ROOT/$c"; break; fi
+          done
+          if [ -z "$SDKM" ]; then
+            SDKM=$(find "$ANDROID_SDK_ROOT" -type f -name sdkmanager 2>/dev/null | head -n 1 || true)
+          fi
+          if [ -z "$SDKM" ]; then
+            echo "sdkmanager не найден в $ANDROID_SDK_ROOT" >&2
+            ls -la "$ANDROID_SDK_ROOT" >&2 || true
+            exit 1
+          fi
+          echo "sdkmanager: $SDKM"
+          yes | "$SDKM" --licenses >/dev/null 2>&1 || true
+          "$SDKM" "ndk;27.0.12077973" >/dev/null
+          echo "installed: $(ls "$ANDROID_SDK_ROOT/ndk/")"
+
       - name: Rust unit tests
         script: |
           source "$HOME/.cargo/env"
           cargo test --manifest-path rust/Cargo.toml
+
       - name: Build Rust .so for Android (jniLibs)
         script: |
+          set -e
           source "$HOME/.cargo/env"
-          export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
-          export NDK_HOME="$ANDROID_NDK_HOME"
+          export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/local/share/android-sdk}"
+          NDK_DIR=$(ls -d "$ANDROID_SDK_ROOT/ndk/"*/ 2>/dev/null | head -n 1)
+          if [ -z "$NDK_DIR" ]; then echo "NDK не найден" >&2; exit 1; fi
+          echo "NDK: $NDK_DIR"
+          export ANDROID_NDK_HOME="$NDK_DIR"
+          export NDK_HOME="$NDK_DIR"
           cargo ndk -t arm64-v8a -t armeabi-v7a \
             -o android/app/src/main/jniLibs \
             build --release --manifest-path rust/Cargo.toml
-          ls -la android/app/src/main/jniLibs/*/
+          ls -laR android/app/src/main/jniLibs/ || true
+
       - name: Flutter pub get
         script: flutter pub get
+
       - name: Flutter analyze
         script: flutter analyze
+
       - name: Build APK
         script: flutter build apk --release
     artifacts:
