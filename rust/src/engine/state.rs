@@ -10,7 +10,7 @@ use grammers_mtsender::SenderPoolFatHandle;
 use parking_lot::{Mutex, RwLock};
 use tokio::runtime::Runtime;
 
-use store::AccountRecord;
+use super::store::{AccountRecord, ChatsFile};
 
 /// Очередь событий для поллера (Dart вызывает piar_poll каждые ~100 мс).
 /// Каждый элемент — готовая JSON-строка события.
@@ -75,7 +75,7 @@ pub struct AppState {
     pub accounts: RwLock<HashMap<String, AccountEntry>>,
     pub pending_auths: Mutex<HashMap<String, Arc<tokio::sync::Mutex<PendingAuth>>>>,
     pub next_request_id: AtomicU64,
-    pub chats: Mutex<store::ChatsFile>,
+    pub chats: Mutex<ChatsFile>,
     pub started_at: std::time::Instant,
 }
 
