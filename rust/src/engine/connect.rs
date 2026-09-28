@@ -156,8 +156,9 @@ pub fn save_accounts_state(state: &AppState) {
 
 /// Первый подключённый аккаунт: сначала prefer-пул, затем любой
 /// (для чатов/постинга — предпочитаем пиар-аккаунты).
+/// try_read: UI-поток не должен блокироваться даже при битой блокировке.
 pub fn connected_client(state: &AppState, prefer: &str) -> Option<Client> {
-    let accounts = state.accounts.read();
+    let accounts = state.accounts.try_read().ok()?;
     let mut any: Option<Client> = None;
     for e in accounts.values() {
         if e.live.is_some() && !e.record.restricted {
@@ -176,7 +177,7 @@ pub fn connected_client(state: &AppState, prefer: &str) -> Option<Client> {
 /// Подключённый клиент СТРОГО из указанного пула (без fallback) —
 /// для парсера (изоляция пулов).
 pub fn connected_client_strict(state: &AppState, pool: &str) -> Option<Client> {
-    let accounts = state.accounts.read();
+    let accounts = state.accounts.try_read().ok()?;
     for e in accounts.values() {
         if e.record.pool == pool && e.live.is_some() && !e.record.restricted {
             return e.live.as_ref().map(|l| l.client.clone());
@@ -187,7 +188,9 @@ pub fn connected_client_strict(state: &AppState, pool: &str) -> Option<Client> {
 
 /// Подключённые клиенты пула (для инвайтов — только piar).
 pub fn connected_clients(state: &AppState, pool: &str) -> Vec<(String, Client)> {
-    let accounts = state.accounts.read();
+    let Ok(accounts) = state.accounts.try_read() else {
+        return Vec::new();
+    };
     accounts
         .iter()
         .filter(|(_, e)| e.record.pool == pool && e.live.is_some() && !e.record.restricted)
@@ -196,8 +199,12 @@ pub fn connected_clients(state: &AppState, pool: &str) -> Vec<(String, Client)> 
 }
 
 /// Реестр аккаунтов → JSON для list_accounts.
+/// try_read: вызывается из UI-потока (piar_call) — не блокировать его.
 pub fn accounts_json(state: &AppState) -> serde_json::Value {
-    let accounts = state.accounts.read();
+    let Ok(accounts) = state.accounts.try_read() else {
+        log::error!("accounts: реестр заблокирован (try_read) — возвращаю пусто");
+        return serde_json::Value::Array(vec![]);
+    };
     let mut list: Vec<serde_json::Value> = Vec::new();
     for e in accounts.values() {
         list.push(serde_json::json!({

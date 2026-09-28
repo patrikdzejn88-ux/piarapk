@@ -212,9 +212,11 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
       );
 
   Future<void> _sendCode() async {
+    PiarCore.instance.note('«Отправить код»: телефон ${_phoneCtrl.text.trim()}');
     await _run(() async {
       final res = await widget.controller
           .addPhone(pool: widget.pool, phone: _phoneCtrl.text.trim());
+      PiarCore.instance.note('add_account_phone ответ: ok=${res.ok}');
       if (res.ok && res.isNeed2fa == false) {
         setState(() => _step = _Step.code);
       } else if (res.isNeed2fa) {

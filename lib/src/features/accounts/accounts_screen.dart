@@ -106,13 +106,24 @@ class _AccountsScreenState extends State<AccountsScreen> {
   }
 
   Future<void> _openAddDialog() async {
-    final tabController = DefaultTabController.of(context);
-    final pool = tabController.index == 0 ? 'piar' : 'parser';
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => AddAccountDialog(controller: _controller, pool: pool),
-    );
+    PiarCore.instance.note('нажато «Добавить аккаунт»');
+    try {
+      final tabController = DefaultTabController.of(context);
+      final pool = tabController.index == 0 ? 'piar' : 'parser';
+      PiarCore.instance.note('открываю диалог, пул: $pool');
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => AddAccountDialog(controller: _controller, pool: pool),
+      );
+    } catch (e) {
+      PiarCore.instance.noteError('диалог добавления не открылся: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Диалог не открылся: $e')),
+        );
+      }
+    }
   }
 
   Future<void> _showLogs() async {

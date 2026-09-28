@@ -94,12 +94,15 @@ pub fn chat_peer_ref(record: &ChatRecord) -> anyhow::Result<PeerRef> {
 
 /// Найти запись чата по dialog_id.
 pub fn find_chat(state: &AppState, chat_id: i64) -> Option<ChatRecord> {
-    state.chats.lock().chats.iter().find(|c| c.dialog_id == chat_id).cloned()
+    let chats = state.chats.try_lock().ok()?;
+    chats.chats.iter().find(|c| c.dialog_id == chat_id).cloned()
 }
 
-/// Список чатов → JSON.
+/// Список чатов → JSON (try_lock: вызывается из UI-потока).
 pub fn chats_json(state: &AppState) -> serde_json::Value {
-    let chats = state.chats.lock();
+    let Ok(chats) = state.chats.try_lock() else {
+        return serde_json::Value::Array(vec![]);
+    };
     let list: Vec<serde_json::Value> = chats
         .chats
         .iter()

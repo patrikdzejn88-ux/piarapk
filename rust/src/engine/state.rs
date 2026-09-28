@@ -30,8 +30,12 @@ impl EventQueue {
     }
 
     /// Забрать все накопленные события (JSON-массив).
+    /// try_lock: если очередь внезапно заблокирована (авария в другой
+    /// задаче), поллер НЕ должен вечно висеть и морозить UI-поток Dart.
     pub fn drain(&self) -> String {
-        let mut q = self.queue.lock();
+        let Ok(mut q) = self.queue.try_lock() else {
+            return "[]".to_string();
+        };
         if q.is_empty() {
             return "[]".to_string();
         }

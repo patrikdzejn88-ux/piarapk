@@ -78,6 +78,20 @@ class PiarCore {
 
   List<String> get lastLogs => List.unmodifiable(_lastLogs);
 
+  /// Записать сообщение в журнал приложения (хлебные крошки UI, ошибки
+  /// виджетов и платформы) — видно в «Логе ядра» и под спиннером.
+  void note(String message) => _note('UI', message);
+
+  /// Ошибка UI/платформы — тоже в журнал.
+  void noteError(String message) => _note('UIERR', message);
+
+  void _note(String level, String message) {
+    _lastLogs.add('$level [ui] $message');
+    if (_lastLogs.length > 200) {
+      _lastLogs.removeRange(0, _lastLogs.length - 200);
+    }
+  }
+
   late final ffi.DynamicLibrary _lib;
   late final int Function(ffi.Pointer<ffi.Uint8>) _piarInit;
   late final int Function(ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>,
