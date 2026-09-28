@@ -112,6 +112,7 @@ pub extern "C" fn piar_init(config_json: *const c_char) -> c_int {
         accounts: Default::default(),
         pending_auths: Default::default(),
         next_request_id: Default::default(),
+        started_at: std::time::Instant::now(),
         parser_cancel: std::sync::atomic::AtomicBool::new(false),
     };
     connect::load_entries(&app);
@@ -361,12 +362,14 @@ async fn dispatch_async(
                 .filter(|s| !s.is_empty())
                 .collect();
             if usernames.is_empty() {
-                return Err(auth::err_json("EMPTY", "список usernames пуст"));
-            }
-            let path = store::UserDatabase::path_for(&app.dbs_dir(), &store::sanitize_name(&name));
-            match store::UserDatabase::append_unique(&path, &usernames) {
-                Ok(added) => Ok(serde_json::json!({"added": added})),
-                Err(e) => Err(auth::err_json("ERROR", e.to_string())),
+                Err(auth::err_json("EMPTY", "список usernames пуст"))
+            } else {
+                let path =
+                    store::UserDatabase::path_for(&app.dbs_dir(), &store::sanitize_name(&name));
+                match store::UserDatabase::append_unique(&path, &usernames) {
+                    Ok(added) => Ok(serde_json::json!({"added": added})),
+                    Err(e) => Err(auth::err_json("ERROR", e.to_string())),
+                }
             }
         }
         other => Err(auth::err_json(

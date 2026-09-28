@@ -157,7 +157,7 @@ pub async fn parse_start(
     // ---------- фаза 3: сохранить базу ----------
     let path = UserDatabase::path_for(&state.dbs_dir(), &base_name);
     let saved = UserDatabase::append_unique(&path, &usernames)
-        .map_err(|e| super::auth::err_json("ERROR", e))?;
+        .map_err(|e| super::auth::err_json("ERROR", e.to_string()))?;
     log::info!("parse {base_name}: usernames {}, сохранено {saved}", usernames.len());
 
     Ok(serde_json::json!({
