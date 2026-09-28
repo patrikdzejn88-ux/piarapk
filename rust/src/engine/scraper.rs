@@ -39,19 +39,22 @@ async fn scrape_message_authors(
                 if let Some(cached) = cache.get(&pid) {
                     cached.clone()
                 } else {
-                    let name = m
-                        .sender_ref()
-                        .await
-                        .ok()
-                        .flatten()
-                        .and_then(|r| client.resolve_peer(r).await.ok())
-                        .and_then(|peer| match peer {
-                            Peer::User(u) => match u.username() {
-                                Some(x) if !x.is_empty() => Some(x.to_string()),
+                    // async-цепочка через match (and_then с await внутри
+                    // замыкания невозможен)
+                    let name = {
+                        let sender = m.sender_ref().await.ok().flatten();
+                        if let Some(r) = sender {
+                            match client.resolve_peer(r).await {
+                                Ok(Peer::User(u)) => match u.username() {
+                                    Some(x) if !x.is_empty() => Some(x.to_string()),
+                                    _ => None,
+                                },
                                 _ => None,
-                            },
-                            _ => None,
-                        });
+                            }
+                        } else {
+                            None
+                        }
+                    };
                     cache.insert(pid, name.clone());
                     name
                 }

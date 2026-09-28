@@ -168,16 +168,15 @@ pub async fn invite_start(
         "failed": failed,
         "remaining": all.len(),
     });
-    if let Some(reason) = stopped_reason {
-        report["stopped_reason"] = serde_json::json!(reason);
-    }
-
-    // сообщение в чат после инвайтов
+    // сообщение в чат после инвайтов (только если не остановились)
     if !message.trim().is_empty() && stopped_reason.is_none() {
         match super::chats::post_message(state, chat_id, message).await {
             Ok(_) => report["message_sent"] = serde_json::json!(true),
             Err(e) => report["message_error"] = serde_json::json!(e.to_string()),
         }
+    }
+    if let Some(reason) = stopped_reason {
+        report["stopped_reason"] = serde_json::json!(reason);
     }
     log::info!("invite: готово — {report}");
     Ok(report)
