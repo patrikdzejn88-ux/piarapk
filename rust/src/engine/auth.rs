@@ -64,17 +64,30 @@ pub async fn add_account_phone(
         updates,
     } = SenderPool::with_configuration(session, state.api_id, params);
     let client = Client::new(handle.clone());
-    tokio::spawn(runner.run());
+    // исход runner'а не игнорируем: его смерть (например, сеть недоступна)
+    // логируется, а не молчит
+    let runner_handle = tokio::spawn(runner.run());
+    tokio::spawn(async move {
+        if let Err(e) = runner_handle.await {
+            log::error!("sender-pool runner паника: {e}");
+        }
+    });
     tokio::spawn(async move {
         use tokio::sync::mpsc::UnboundedReceiver;
         let mut rx: UnboundedReceiver<grammers_session::updates::UpdatesLike> = updates;
         while rx.recv().await.is_some() {}
     });
 
-    let login_token: LoginToken = client
-        .request_login_code(phone, &state.api_hash)
-        .await
-        .map_err(|e| anyhow::anyhow!("не удалось отправить код: {e}"))?;
+    log::info!("запрашиваем код для {phone}");
+    // таймаут сети: без него недоступная сеть = вечный спиннер вместо ошибки
+    let login_token: LoginToken = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        client.request_login_code(phone, &state.api_hash),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("таймаут сети (30 с) — проверьте интернет-соединение"))?
+    .map_err(|e| anyhow::anyhow!("не удалось отправить код: {e}"))?;
+    log::info!("код отправлен для {phone}");
 
     state.pending_auths.lock().insert(
         phone.to_string(),
@@ -106,7 +119,18 @@ pub async fn submit_auth_code(
     };
     let mut p = pending.lock().await;
 
-    match p.client.sign_in(&p.login_token, code).await {
+    let sign_result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        p.client.sign_in(&p.login_token, code),
+    )
+    .await;
+    let sign_result = match sign_result {
+        Ok(r) => r,
+        Err(_) => {
+            return Err(err_json("TIMEOUT", "таймаут сети (30 с) при входе — проверьте интернет"))
+        }
+    };
+    match sign_result {
         Ok(user) => Ok(finalize_login(state, &mut p, user).await),
         Err(SignInError::PasswordRequired(token)) => {
             p.password_token = Some(token);
@@ -142,7 +166,18 @@ pub async fn submit_auth_password(
     let Some(token) = p.password_token.take() else {
         return Err(err_json("NO_NEED_2FA", "этот вход не ждёт 2FA-пароль (введите код)"));
     };
-    match p.client.check_password(token, password.as_bytes()).await {
+    let check_result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        p.client.check_password(token, password.as_bytes()),
+    )
+    .await;
+    let check_result = match check_result {
+        Ok(r) => r,
+        Err(_) => {
+            return Err(err_json("TIMEOUT", "таймаут сети (30 с) при проверке 2FA"))
+        }
+    };
+    match check_result {
         Ok(user) => Ok(finalize_login(state, &mut p, user).await),
         Err(SignInError::InvalidPassword(token)) => {
             p.password_token = Some(token);

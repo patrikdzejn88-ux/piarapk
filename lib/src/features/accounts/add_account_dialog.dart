@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
+import '../../core/bridge.dart';
 import 'accounts_controller.dart';
 
 /// Диалог-визард добавления аккаунта:
@@ -25,6 +28,9 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
   bool _busy = false;
   String? _error;
 
+  /// обновление хвоста лога под спиннером, пока идёт операция
+  Timer? _busyLogTimer;
+
   final _phoneCtrl = TextEditingController();
   final _codeCtrl = TextEditingController();
   final _passwordCtrl = TextEditingController();
@@ -35,6 +41,7 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
 
   @override
   void dispose() {
+    _busyLogTimer?.cancel();
     for (final c in [
       _phoneCtrl,
       _codeCtrl,
@@ -56,6 +63,10 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
       _busy = true;
       _error = null;
     });
+    _busyLogTimer?.cancel();
+    _busyLogTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted && _busy) setState(() {});
+    });
     try {
       await action();
     } catch (e) {
@@ -63,6 +74,7 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
         setState(() => _error = e.toString());
       }
     } finally {
+      _busyLogTimer?.cancel();
       if (mounted) {
         setState(() => _busy = false);
       }
@@ -77,6 +89,28 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
     });
   }
 
+  /// Последние строки лога ядра для отображения под спиннером.
+  List<Widget> _recentLogs() {
+    final logs = PiarCore.instance.lastLogs;
+    if (logs.isEmpty) {
+      return const [SizedBox.shrink()];
+    }
+    final tail = logs.length <= 4 ? logs : logs.sublist(logs.length - 4);
+    return [
+      for (final line in tail)
+        Text(
+          line,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontFamily: 'monospace', fontSize: 10),
+        ),
+      const SizedBox(height: 4),
+      const Text('полный лог — кнопка «Лог ядра» в разделе Аккаунты',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 10)),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
@@ -84,12 +118,17 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
       content: SizedBox(
         width: 460,
         child: _busy
-            ? const Column(
+            ? Column(
                 mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text('Выполняется…'),
+                  const CircularProgressIndicator(),
+                  const SizedBox(height: 16),
+                  const Text('Выполняется…',
+                      textAlign: TextAlign.center),
+                  const SizedBox(height: 12),
+                  // хвост лога ядра: диагностика прямо под спиннером
+                  ..._recentLogs(),
                 ],
               )
             : Column(

@@ -4,8 +4,8 @@ import 'package:flutter/material.dart';
 
 import '../../core/bridge.dart';
 
-/// Раздел «Пиар»: инвайты в чат по базе + сообщение.
-/// Протокол ядра: list_chats, list_databases, invite_start, post_message.
+/// Раздел «Пиар»: ОДИН аккаунт (владелец чата) добавляет людей из базы
+/// в чат и отправляет сообщение. Чат — read-only для участников.
 class PiarScreen extends StatefulWidget {
   const PiarScreen({super.key});
 
@@ -17,8 +17,7 @@ class _PiarScreenState extends State<PiarScreen> {
   Map<String, dynamic>? _chat;
   String? _database;
   final _messageCtrl = TextEditingController();
-  final _perAccountCtrl = TextEditingController(text: '20');
-  final _pauseCtrl = TextEditingController(text: '5000');
+  final _countCtrl = TextEditingController(text: '0');
 
   bool _busy = false;
   String? _progressLine;
@@ -33,14 +32,16 @@ class _PiarScreenState extends State<PiarScreen> {
     super.initState();
     _reload();
     _sub = PiarCore.instance.events.listen(_onEvent);
+    PiarCore.instance.init().then((_) {
+      if (mounted) setState(_reload);
+    });
   }
 
   @override
   void dispose() {
     _sub?.cancel();
     _messageCtrl.dispose();
-    _perAccountCtrl.dispose();
-    _pauseCtrl.dispose();
+    _countCtrl.dispose();
     super.dispose();
   }
 
@@ -67,26 +68,26 @@ class _PiarScreenState extends State<PiarScreen> {
   }
 
   void _onEvent(PiarEvent e) {
-    if (e.method == 'invite_start') {
-      if (e.type == 'progress' && mounted) {
-        final d = e.data;
-        setState(() => _progressLine =
-            'Инвайты: ${d?['done'] ?? 0} ок, ${d?['failed'] ?? 0} ошибок'
-                '${d?['current_account'] != null ? ' · аккаунт ${d!['current_account']}' : ''}');
-      }
-      if (e.type == 'result' && mounted) {
-        setState(() {
-          _busy = false;
-          _summary = e.ok ? (e.data is Map ? e.data as Map<String, dynamic> : null) : null;
-          _progressLine = e.ok ? null : 'Ошибка: ${e.error}';
-        });
-      }
+    if (e.method != 'invite_start') return;
+    if (e.type == 'progress' && mounted) {
+      final d = e.data;
+      setState(() => _progressLine =
+          'Добавлено: ${d?['done'] ?? 0} · ошибок: ${d?['failed'] ?? 0}'
+              '${d?['note'] != null ? ' · ${d!['note']}' : ''}');
+    }
+    if (e.type == 'result' && mounted) {
+      setState(() {
+        _busy = false;
+        _summary = e.ok && e.data is Map ? e.data as Map<String, dynamic> : null;
+        _progressLine = e.ok ? null : 'Ошибка: ${e.error}';
+      });
+      _reload();
     }
   }
 
   Future<void> _start() async {
     if (_chat == null || _database == null) {
-      _snack('Выберите чат и базу получателей');
+      _snack('Выберите чат и базу получателей (сначала раздел «Парсер»)');
       return;
     }
     setState(() {
@@ -98,8 +99,7 @@ class _PiarScreenState extends State<PiarScreen> {
       'chat_id': _chat!['id'],
       'database': _database,
       'message': _messageCtrl.text.trim(),
-      'per_account': int.tryParse(_perAccountCtrl.text.trim()) ?? 20,
-      'batch_pause_ms': int.tryParse(_pauseCtrl.text.trim()) ?? 5000,
+      'count': int.tryParse(_countCtrl.text.trim()) ?? 0,
     });
     if (!res.ok && mounted) {
       setState(() {
@@ -114,8 +114,10 @@ class _PiarScreenState extends State<PiarScreen> {
       _snack('Выберите чат');
       return;
     }
-    final res = await PiarCore.instance
-        .callAsync('post_message', {'chat_id': _chat!['id'], 'text': _messageCtrl.text.trim()});
+    final res = await PiarCore.instance.callAsync('post_message', {
+      'chat_id': _chat!['id'],
+      'text': _messageCtrl.text.trim(),
+    });
     _snack(res.ok ? 'Сообщение отправлено' : 'Ошибка: ${res.errorText}');
   }
 
@@ -137,117 +139,134 @@ class _PiarScreenState extends State<PiarScreen> {
   @override
   Widget build(BuildContext context) {
     if (!PiarCore.instance.available) {
-      return const Center(child: Text('Ядро не загружено — раздел недоступен.'));
+      return Center(
+        child: Text('Ядро не загружено — раздел недоступен'
+            '${PiarCore.instance.lastError != null ? '\n${PiarCore.instance.lastError}' : ''}'),
+      );
     }
-    return ListView(      padding: const EdgeInsets.all(16),
-      children: [
-        Text('Пиар-рассылка', style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 4),
-        Text('Инвайты из базы в чат + сообщение. Чат настроен «только для чтения».',
-            style: Theme.of(context).textTheme.bodySmall),
-        const SizedBox(height: 16),
-        DropdownButtonFormField<Map<String, dynamic>>(
-          initialValue: _chat,
-          decoration: const InputDecoration(
-              labelText: 'Чат (куда инвайтим)', border: OutlineInputBorder()),
-          items: [
-            for (final c in _chats)
-              DropdownMenuItem(
-                value: c,
-                child: Text('${c['title'] ?? c['id']} · ${c['members'] ?? 0} уч.'),
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('Пиар: инвайты в чат',
+                  style: Theme.of(context).textTheme.titleLarge,
+                  textAlign: TextAlign.center),
+              const SizedBox(height: 4),
+              Text(
+                'Работает ОДИН аккаунт из пула «Пиар» — он же владелец чата. '
+                'Люди из базы добавляются в чат, затем отправляется сообщение.',
+                style: Theme.of(context).textTheme.bodySmall,
+                textAlign: TextAlign.center,
               ),
-          ],
-          onChanged: (v) => setState(() => _chat = v),
-        ),
-        const SizedBox(height: 12),
-        DropdownButtonFormField<String>(
-          initialValue: _database,
-          decoration: const InputDecoration(
-              labelText: 'База получателей', border: OutlineInputBorder()),
-          items: [
-            for (final d in _databases)
-              DropdownMenuItem(
-                value: d['name']?.toString(),
-                child: Text('${d['name']} · ${d['entries'] ?? 0} записей'),
-              ),
-          ],
-          onChanged: (v) => setState(() => _database = v),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _messageCtrl,
-          maxLines: 3,
-          decoration: const InputDecoration(
-              labelText: 'Сообщение в чат (после инвайтов)',
-              border: OutlineInputBorder()),
-        ),
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _perAccountCtrl,
+              const SizedBox(height: 20),
+              DropdownButtonFormField<Map<String, dynamic>>(
+                initialValue: _chat,
                 decoration: const InputDecoration(
-                    labelText: 'Инвайтов на аккаунт', border: OutlineInputBorder()),
+                    labelText: 'Чат (куда добавляем людей)',
+                    border: OutlineInputBorder()),
+                items: [
+                  for (final c in _chats)
+                    DropdownMenuItem(
+                      value: c,
+                      child: Text(
+                          '${c['title'] ?? c['id']} · ${c['members'] ?? 0} уч.'),
+                    ),
+                ],
+                onChanged: (v) => setState(() => _chat = v),
               ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: TextField(
-                controller: _pauseCtrl,
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: _addChat,
+                  icon: const Icon(Icons.add_link, size: 18),
+                  label: const Text('Добавить чат / создать read-only канал'),
+                ),
+              ),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                initialValue: _database,
                 decoration: const InputDecoration(
-                    labelText: 'Пауза между сетами, мс',
+                    labelText: 'База людей (собирается в разделе «Парсер»)',
+                    border: OutlineInputBorder()),
+                items: [
+                  for (final d in _databases)
+                    DropdownMenuItem(
+                      value: d['name']?.toString(),
+                      child: Text('${d['name']} · ${d['entries'] ?? 0} чел.'),
+                    ),
+                ],
+                onChanged: (v) => setState(() => _database = v),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _countCtrl,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Сколько людей из базы добавить (0 = все)',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _messageCtrl,
+                maxLines: 3,
+                decoration: const InputDecoration(
+                    labelText: 'Сообщение в чат (после добавления людей)',
                     border: OutlineInputBorder()),
               ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
-        if (_progressLine != null) ...[
-          Text(_progressLine!),
-          const SizedBox(height: 12),
-        ],
-        if (_summary != null) ...[
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Text(
-                'Готово. Приглашено: ${_summary!['invited'] ?? 0}, '
-                'ошибок: ${_summary!['failed'] ?? 0}'
-                '${(_summary!['restricted_accounts'] as List?)?.isNotEmpty == true ? ', аккаунтов в карантине: ${(_summary!['restricted_accounts'] as List).length}' : ''}',
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: _busy ? null : _start,
+                icon: _busy
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.send_outlined),
+                label: Text(_busy ? 'Работаем…' : 'Запустить'),
               ),
-            ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: _postMessage,
+                icon: const Icon(Icons.post_add),
+                label: const Text('Отправить сообщение'),
+              ),
+              const SizedBox(height: 8),
+              IconButton(
+                tooltip: 'Обновить списки',
+                onPressed: () => setState(_reload),
+                icon: const Icon(Icons.refresh),
+              ),
+              if (_progressLine != null) ...[
+                const SizedBox(height: 8),
+                Text(_progressLine!, textAlign: TextAlign.center),
+              ],
+              if (_summary != null) ...[
+                const SizedBox(height: 8),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Text(
+                      'Готово. Добавлено: ${_summary!['invited'] ?? 0}, '
+                      'ошибок: ${_summary!['failed'] ?? 0}'
+                      '${_summary!['remaining'] != null ? ', осталось: ${_summary!['remaining']}' : ''}'
+                      '${_summary!['stopped_reason'] != null ? '\nОСТАНОВЛЕНО: ${_summary!['stopped_reason']}' : ''}'
+                      '${_summary!['message_sent'] == true ? '\nСообщение отправлено' : ''}',
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+              ],
+            ],
           ),
-          const SizedBox(height: 12),
-        ],
-        Row(
-          children: [
-            FilledButton.icon(
-              onPressed: _busy ? null : _start,
-              icon: const Icon(Icons.send_outlined),
-              label: const Text('Запустить инвайты'),
-            ),
-            const SizedBox(width: 8),
-            OutlinedButton.icon(
-              onPressed: _postMessage,
-              icon: const Icon(Icons.post_add),
-              label: const Text('Отправить сообщение'),
-            ),
-            const SizedBox(width: 8),
-            OutlinedButton.icon(
-              onPressed: _addChat,
-              icon: const Icon(Icons.add_link),
-              label: const Text('Чат'),
-            ),
-            const SizedBox(width: 8),
-            IconButton(
-              tooltip: 'Обновить списки',
-              onPressed: () => setState(_reload),
-              icon: const Icon(Icons.refresh),
-            ),
-          ],
         ),
-      ],
+      ),
     );
   }
 }

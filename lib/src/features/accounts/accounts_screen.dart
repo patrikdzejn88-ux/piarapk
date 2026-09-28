@@ -43,6 +43,17 @@ class _AccountsScreenState extends State<AccountsScreen> {
       length: 2,
       child: Scaffold(
         backgroundColor: Colors.transparent,
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          title: const Text('Аккаунты'),
+          actions: [
+            IconButton(
+              tooltip: 'Лог ядра (диагностика)',
+              icon: const Icon(Icons.terminal_outlined),
+              onPressed: _showLogs,
+            ),
+          ],
+        ),
         body: Column(
           children: [
             if (!core.available)
@@ -85,6 +96,46 @@ class _AccountsScreenState extends State<AccountsScreen> {
       context: context,
       barrierDismissible: false,
       builder: (_) => AddAccountDialog(controller: _controller, pool: pool),
+    );
+  }
+
+  Future<void> _showLogs() async {
+    final logs = PiarCore.instance.lastLogs;
+    await showDialog<void>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Лог ядра'),
+        content: SizedBox(
+          width: 480,
+          height: 420,
+          child: logs.isEmpty
+              ? const Center(child: Text('Пока пусто — событий не было'))
+              : ListView.builder(
+                  itemCount: logs.length,
+                  itemBuilder: (context, i) {
+                    final line = logs[logs.length - 1 - i];
+                    final isError = line.startsWith('ERROR') || line.contains('panic');
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Text(
+                        line,
+                        style: TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 11,
+                          color: isError ? Colors.redAccent : null,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Закрыть'),
+          ),
+        ],
+      ),
     );
   }
 }

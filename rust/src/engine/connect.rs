@@ -37,7 +37,13 @@ pub async fn start_client(
         updates,
     } = SenderPool::with_configuration(session, api_id, params);
     let client = Client::new(handle.clone());
-    tokio::spawn(runner.run());
+    // исход runner'а логируется, а не выбрасывается
+    let runner_handle = tokio::spawn(runner.run());
+    tokio::spawn(async move {
+        if let Err(e) = runner_handle.await {
+            log::error!("sender-pool runner паника: {e}");
+        }
+    });
     tokio::spawn(drain_updates(updates));
     Ok(StartedClient { client, handle })
 }

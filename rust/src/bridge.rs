@@ -33,6 +33,39 @@ fn write_out(out: *mut *mut c_char, s: String) -> c_int {
     }
 }
 
+/// Простейший логгер: log-записи ядра уходят в очередь событий (type:"log"),
+/// чтобы их было видно в приложении (диагностика «молчаливых» проблем).
+struct EventLogger;
+
+impl log::Log for EventLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+
+    fn log(&self, record: &log::Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        if let Some(app) = current_state() {
+            let ev = serde_json::json!({
+                "request_id": 0,
+                "type": "log",
+                "method": "core",
+                "ok": true,
+                "data": {
+                    "level": record.level().to_string(),
+                    "target": record.target(),
+                    "message": record.args().to_string(),
+                },
+                "error": null,
+            });
+            app.events.push(ev.to_string());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
 #[no_mangle]
 pub extern "C" fn piar_init(config_json: *const c_char) -> c_int {
     if STATE.get().is_some() {
@@ -84,6 +117,23 @@ pub extern "C" fn piar_init(config_json: *const c_char) -> c_int {
     connect::load_entries(&app);
 
     let _ = STATE.set(Arc::new(app));
+    // Паники в spawn-задачах больше не молчат — уходят в лог-события
+    std::panic::set_hook(Box::new(|info| {
+        if let Some(app) = current_state() {
+            let ev = serde_json::json!({
+                "request_id": 0,
+                "type": "log",
+                "method": "panic",
+                "ok": false,
+                "data": {"level": "panic", "target": "", "message": info.to_string()},
+                "error": null,
+            });
+            app.events.push(ev.to_string());
+        }
+    }));
+    let _ = log::set_boxed_logger(Box::new(EventLogger));
+    log::set_max_level(log::LevelFilter::Info);
+    log::info!("piarcore инициализирован");
     0
 }
 
@@ -126,6 +176,19 @@ pub extern "C" fn piar_call(
                 .collect();
             serde_json::json!({ "ok": true, "data": list })
         }
+        "get_database" => {
+            // содержимое базы (для экспорта на устройство)
+            let name = params
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let path = store::UserDatabase::path_for(&app.dbs_dir(), &store::sanitize_name(&name));
+            match std::fs::read_to_string(&path) {
+                Ok(content) => serde_json::json!({ "ok": true, "data": { "name": name, "content": content } }),
+                Err(e) => serde_json::json!({ "ok": false, "error": { "code": "DB_READ", "message": e.to_string() } }),
+            }
+        }
         other => serde_json::json!({
             "ok": false,
             "error": { "code": "UNKNOWN_METHOD", "message": format!("неизвестный sync-метод: {other}") },
@@ -155,9 +218,28 @@ pub extern "C" fn piar_call_async(
     }
 
     let task_app = app.clone();
+    let panic_app = app.clone();
+    let m2 = m.clone();
+    // Паника внутри задачи НЕ должна глотать result-событие (иначе Dart-Future
+    // висит вечно) — ловим unwind и отправляем ошибку PANIC
+    let fut = futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
+        async move {
+            let (ok, data, error) = dispatch_async(&task_app, &m, &params).await;
+            task_app.event(id, "result", &m, ok, data, error);
+        },
+    ));
     app.runtime.spawn(async move {
-        let (ok, data, error) = dispatch_async(&task_app, &m, &params).await;
-        task_app.event(id, "result", &m, ok, data, error);
+        if let Err(p) = fut.await {
+            log::error!("паника в задаче {m2}: {p:?}");
+            panic_app.event(
+                id,
+                "result",
+                &m2,
+                false,
+                serde_json::Value::Null,
+                serde_json::json!({ "code": "PANIC", "message": format!("{p:?}") }),
+            );
+        }
     });
     0
 }
@@ -227,21 +309,21 @@ async fn dispatch_async(
             let about = str_param(params, "about", "");
             map_anyhow(chats::create_readonly_channel(app, &title, &about).await)
         }
-        // ---- парсер ----
+        // ---- парсер (только по сообщениям чата) ----
         "parse_start" => {
             let chat = str_param(params, "chat", "");
-            let mode = str_param(params, "mode", "participants");
-            let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(1000) as usize;
-            scraper::parse_start(app, &chat, &mode, limit).await
+            let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(10000) as usize;
+            log::info!("parse_start: чат {chat}, лимит {limit}");
+            scraper::parse_start(app, &chat, limit).await
         }
-        // ---- пиар ----
+        // ---- пиар (один аккаунт, N людей из базы) ----
         "invite_start" => {
             let chat_id = params.get("chat_id").and_then(|v| v.as_i64()).unwrap_or_default();
             let database = str_param(params, "database", "");
             let message = str_param(params, "message", "");
-            let per_account = params.get("per_account").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-            let pause = params.get("batch_pause_ms").and_then(|v| v.as_u64()).unwrap_or(5000);
-            inviter::invite_start(app, chat_id, &database, &message, per_account, pause).await
+            let count = params.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            log::info!("invite_start: чат {chat_id}, база {database}, людей {count}");
+            inviter::invite_start(app, chat_id, &database, &message, count).await
         }
         other => Err(auth::err_json(
             "UNKNOWN_METHOD",

@@ -3,10 +3,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../core/bridge.dart';
+import '../../core/native.dart';
 
-/// Раздел «Парсер»: сбор участников/авторов сообщений из чата
-/// на отдельном пуле аккаунтов.
-/// Протокол ядра: parse_start, list_databases.
+/// Раздел «Парсер»: сбор участников чата по авторам последних сообщений.
+/// Работает на ОТДЕЛЬНОМ пуле аккаунтов («Парсер»).
 class ParserScreen extends StatefulWidget {
   const ParserScreen({super.key});
 
@@ -14,13 +14,10 @@ class ParserScreen extends StatefulWidget {
   State<ParserScreen> createState() => _ParserScreenState();
 }
 
-enum _ParseMode { participants, messages }
-
 class _ParserScreenState extends State<ParserScreen> {
   final _chatCtrl = TextEditingController();
-  final _limitCtrl = TextEditingController(text: '1000');
+  final _limitCtrl = TextEditingController(text: '30000');
 
-  _ParseMode _mode = _ParseMode.participants;
   bool _busy = false;
   String? _progressLine;
   Map<String, dynamic>? _summary;
@@ -33,6 +30,9 @@ class _ParserScreenState extends State<ParserScreen> {
     super.initState();
     _reloadDatabases();
     _sub = PiarCore.instance.events.listen(_onEvent);
+    PiarCore.instance.init().then((_) {
+      if (mounted) setState(_reloadDatabases);
+    });
   }
 
   @override
@@ -58,7 +58,7 @@ class _ParserScreenState extends State<ParserScreen> {
     if (e.method != 'parse_start') return;
     if (e.type == 'progress' && mounted) {
       final d = e.data;
-      setState(() => _progressLine = 'Собрано: ${d?['done'] ?? 0}');
+      setState(() => _progressLine = 'Обработано сообщений: ${d?['done'] ?? 0}');
     }
     if (e.type == 'result' && mounted) {
       setState(() {
@@ -83,8 +83,7 @@ class _ParserScreenState extends State<ParserScreen> {
     });
     final res = await PiarCore.instance.callAsync('parse_start', {
       'chat': chat,
-      'mode': _mode.name,
-      'limit': int.tryParse(_limitCtrl.text.trim()) ?? 1000,
+      'limit': int.tryParse(_limitCtrl.text.trim()) ?? 10000,
     });
     if (!res.ok && mounted) {
       setState(() {
@@ -92,6 +91,24 @@ class _ParserScreenState extends State<ParserScreen> {
         _progressLine = 'Ошибка: ${res.errorText}';
       });
     }
+  }
+
+  Future<void> _downloadBase(Map<String, dynamic> db) async {
+    final name = db['name']?.toString() ?? 'base';
+    final res = PiarCore.instance.call('get_database', {'name': name});
+    if (!res.ok) {
+      _snack('Ошибка чтения базы: ${res.errorText}');
+      return;
+    }
+    final content = res.data is Map ? (res.data as Map)['content']?.toString() : null;
+    if (content == null) {
+      _snack('База пуста');
+      return;
+    }
+    final where = await Native.exportToDownloads('$name.txt', content);
+    _snack(where != null
+        ? 'Сохранено: $where'
+        : 'Не удалось сохранить в «Загрузки»');
   }
 
   void _snack(String text) {
@@ -102,98 +119,117 @@ class _ParserScreenState extends State<ParserScreen> {
   @override
   Widget build(BuildContext context) {
     if (!PiarCore.instance.available) {
-      return const Center(child: Text('Ядро не загружено — раздел недоступен.'));
+      return Center(
+        child: Text('Ядро не загружено — раздел недоступен'
+            '${PiarCore.instance.lastError != null ? '\n${PiarCore.instance.lastError}' : ''}'),
+      );
     }
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        Text('Парсер участников', style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 4),
-        Text(
-          'Работает на отдельном пуле аккаунтов («Парсер»), чтобы не жечь пиар-аккаунты.',
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-        const SizedBox(height: 16),
-        TextField(
-          controller: _chatCtrl,
-          decoration: const InputDecoration(
-            labelText: 'Чат (ссылка или @username)',
-            hintText: '@somechat / https://t.me/somechat',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 12),
-        SegmentedButton<_ParseMode>(
-          segments: const [
-            ButtonSegment(
-              value: _ParseMode.participants,
-              icon: Icon(Icons.groups_outlined),
-              label: Text('Участники'),
-            ),
-            ButtonSegment(
-              value: _ParseMode.messages,
-              icon: Icon(Icons.chat_bubble_outline),
-              label: Text('Авторы сообщений'),
-            ),
-          ],
-          selected: {_mode},
-          onSelectionChanged: (s) => setState(() => _mode = s.first),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _limitCtrl,
-          decoration: const InputDecoration(
-            labelText: 'Лимит (участников или последних сообщений)',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 16),
-        if (_progressLine != null) ...[
-          Text(_progressLine!),
-          const SizedBox(height: 12),
-        ],
-        if (_summary != null) ...[
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Text(
-                'Готово. Сохранено: ${_summary!['saved'] ?? 0}, '
-                'пропущено (дубликаты/без username): ${_summary!['skipped'] ?? 0}'
-                '${_summary!['base'] != null ? ' · база: ${_summary!['base']}' : ''}',
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('Парсер участников',
+                  style: Theme.of(context).textTheme.titleLarge,
+                  textAlign: TextAlign.center),
+              const SizedBox(height: 4),
+              Text(
+                'Собирает авторов последних сообщений чата. Работает на отдельном пуле «Парсер», чтобы не жечь пиар-аккаунты.',
+                style: Theme.of(context).textTheme.bodySmall,
+                textAlign: TextAlign.center,
               ),
-            ),
+              const SizedBox(height: 20),
+              TextField(
+                controller: _chatCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Чат (ссылка или @username)',
+                  hintText: '@somechat / https://t.me/somechat',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _limitCtrl,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Сколько последних сообщений обработать',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: _busy ? null : _start,
+                icon: _busy
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.play_arrow_outlined),
+                label: Text(_busy ? 'Собираем…' : 'Собрать'),
+              ),
+              if (_progressLine != null) ...[
+                const SizedBox(height: 12),
+                Text(_progressLine!, textAlign: TextAlign.center),
+              ],
+              if (_summary != null) ...[
+                const SizedBox(height: 12),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Text(
+                      'Готово. Уникальных сохранено: ${_summary!['saved'] ?? 0}, '
+                      'пропущено (без username/дубли): ${_summary!['skipped'] ?? 0}'
+                      '${_summary!['base'] != null ? ' · база: ${_summary!['base']}' : ''}',
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 32),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text('Базы (доступны в разделе «Пиар»)',
+                        style: Theme.of(context).textTheme.titleMedium),
+                  ),
+                  IconButton(
+                    tooltip: 'Обновить',
+                    onPressed: _reloadDatabases,
+                    icon: const Icon(Icons.refresh),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              if (_databases.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: Text('Баз ещё нет — соберите первый чат.',
+                      textAlign: TextAlign.center),
+                )
+              else
+                ..._databases.map(
+                  (d) => ListTile(
+                    dense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                    leading: const Icon(Icons.storage_outlined),
+                    title: Text('${d['name']}'),
+                    subtitle: Text('${d['entries'] ?? 0} записей'),
+                    trailing: IconButton(
+                      tooltip: 'Скачать на устройство',
+                      icon: const Icon(Icons.download_outlined),
+                      onPressed: () => _downloadBase(d),
+                    ),
+                  ),
+                ),
+            ],
           ),
-          const SizedBox(height: 12),
-        ],
-        Row(
-          children: [
-            FilledButton.icon(
-              onPressed: _busy ? null : _start,
-              icon: const Icon(Icons.play_arrow_outlined),
-              label: const Text('Собрать'),
-            ),
-            const SizedBox(width: 8),
-            IconButton(
-              tooltip: 'Обновить базы',
-              onPressed: _reloadDatabases,
-              icon: const Icon(Icons.refresh),
-            ),
-          ],
         ),
-        const SizedBox(height: 24),
-        Text('Базы получателей', style: Theme.of(context).textTheme.titleMedium),
-        const SizedBox(height: 8),
-        if (_databases.isEmpty)
-          const Text('Баз ещё нет — соберите первый чат.')
-        else
-          for (final d in _databases)
-            ListTile(
-              dense: true,
-              leading: const Icon(Icons.storage_outlined),
-              title: Text('${d['name']}'),
-              subtitle: Text('${d['entries'] ?? 0} записей'),
-            ),
-      ],
+      ),
     );
   }
 }

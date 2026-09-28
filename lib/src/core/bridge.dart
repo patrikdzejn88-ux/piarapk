@@ -73,6 +73,11 @@ class PiarCore {
   String? libraryPath;
   String? lastError;
 
+  /// Последние log/panic события ядра (кольцевой буфер, для диагностики).
+  final List<String> _lastLogs = <String>[];
+
+  List<String> get lastLogs => List.unmodifiable(_lastLogs);
+
   late final ffi.DynamicLibrary _lib;
   late final int Function(ffi.Pointer<ffi.Uint8>) _piarInit;
   late final int Function(ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>,
@@ -280,17 +285,34 @@ class PiarCore {
       final decoded = jsonDecode(s);
       if (decoded is! List) return;
       for (final item in decoded) {
-        if (item is! Map) continue;
-        final ev = PiarEvent.fromMap(item.cast<String, dynamic>());
-        if (ev.type == 'result') {
-          final completer = _pending.remove(ev.requestId);
-          completer?.complete(PiarResult(
-            ok: ev.ok,
-            data: ev.data,
-            error: ev.error,
-          ));
+        // каждое событие обрабатывается независимо: битое одно не должно
+        // уничтожать всю пачку (иначе result зависшего запроса теряется)
+        try {
+          if (item is! Map) continue;
+          final ev = PiarEvent.fromMap(item.cast<String, dynamic>());
+          if (ev.type == 'log') {
+            final d = ev.data;
+            _lastLogs
+                .add('${d?['level'] ?? ''} [${ev.method}] ${d?['message'] ?? ''}');
+            if (_lastLogs.length > 200) {
+              _lastLogs.removeRange(0, _lastLogs.length - 200);
+            }
+          }
+          if (ev.type == 'result') {
+            final completer = _pending.remove(ev.requestId);
+            completer?.complete(PiarResult(
+              ok: ev.ok,
+              data: ev.data,
+              error: ev.error,
+            ));
+          }
+          _events.add(ev);
+        } catch (e) {
+          _lastLogs.add('WARN [poll] событие потеряно: $e');
+          if (_lastLogs.length > 200) {
+            _lastLogs.removeRange(0, _lastLogs.length - 200);
+          }
         }
-        _events.add(ev);
       }
     } catch (_) {
       // поллинг не должен ронять приложение
