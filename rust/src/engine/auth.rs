@@ -18,18 +18,7 @@ pub async fn add_account_phone(
     pool: &str,
     raw_phone: &str,
 ) -> anyhow::Result<serde_json::Value> {
-    let phone: String = {
-        let cleaned: String = raw_phone
-            .trim()
-            .chars()
-            .filter(|c| *c != ' ' && *c != '-' && *c != '(' && *c != ')' && *c != '\u{a0}')
-            .collect();
-        if cleaned.starts_with('+') {
-            cleaned
-        } else {
-            format!("+{cleaned}")
-        }
-    };
+    let phone = normalize_phone(raw_phone);
     log::info!("add_account_phone: {phone} (пул {pool})");
 
     // С дефолтной парой Telegram отвечает api_id_invalid — не тратим попытку,
@@ -126,18 +115,35 @@ pub async fn add_account_phone(
     Ok(serde_json::json!({ "stage": "code" }))
 }
 
+/// Нормализация телефона: мусор-символы вон, '+' подставляется автоматически.
+/// Применяется ВО ВСЕХ методах авторизации — ключ реестра PendingAuth один
+/// и тот же независимо от того, как пользователь ввёл номер.
+fn normalize_phone(raw: &str) -> String {
+    let cleaned: String = raw
+        .trim()
+        .chars()
+        .filter(|c| *c != ' ' && *c != '-' && *c != '(' && *c != ')' && *c != '\u{a0}')
+        .collect();
+    if cleaned.starts_with('+') {
+        cleaned
+    } else {
+        format!("+{cleaned}")
+    }
+}
+
 /// Ввести код из Telegram.
 pub async fn submit_auth_code(
     state: &AppState,
-    phone: &str,
+    raw_phone: &str,
     code: &str,
 ) -> Result<serde_json::Value, serde_json::Value> {
+    let phone = normalize_phone(raw_phone);
     let pending = {
         let map = state.pending_auths.lock();
-        map.get(phone).cloned()
+        map.get(phone.as_str()).cloned()
     };
     let Some(pending) = pending else {
-        return Err(err_json("NO_AUTH", "сначала запросите код (add_account_phone)"));
+        return Err(err_json("NO_AUTH", "начала запросите код заново (кнопка «Отправить код») и введите его"));
     };
     let mut p = pending.lock().await;
 
@@ -173,15 +179,16 @@ pub async fn submit_auth_code(
 /// Ввести 2FA-пароль.
 pub async fn submit_auth_password(
     state: &AppState,
-    phone: &str,
+    raw_phone: &str,
     password: &str,
 ) -> Result<serde_json::Value, serde_json::Value> {
+    let phone = normalize_phone(raw_phone);
     let pending = {
         let map = state.pending_auths.lock();
-        map.get(phone).cloned()
+        map.get(phone.as_str()).cloned()
     };
     let Some(pending) = pending else {
-        return Err(err_json("NO_AUTH", "нет начатого входа для этого номера"));
+        return Err(err_json("NO_AUTH", "нет начатого входа для этого номера — запросите код заново"));
     };
     let mut p = pending.lock().await;
     // PasswordToken не Clone — забираем (на InvalidPassword вернётся новый)
