@@ -49,29 +49,34 @@ async fn scan_worker(
     } else {
         client.iter_messages(peer_ref).limit(limit)
     };
-    while let Some(m) = match iter.next().await {
-        Ok(m) => m,
-        Err(_) => break, // сеть/флуд на этом воркере: сохраняем что есть
-    } {
-        n += 1;
-        message_ids.insert(m.id());
-        if let Some(r) = m.sender_ref().await.ok().flatten() {
-            authors.insert(r.id, r);
-        }
-        let total_now = done.fetch_add(1, Ordering::Relaxed) + 1;
-        if n % 100 == 0 {
-            state.progress(
-                "parse_start",
-                serde_json::json!({
-                    "phase": "messages",
-                    "done": total_now,
-                    "authors": 0, // обновит агрегатор ниже
-                }),
-            );
-        }
-        if state.parser_cancelled() {
-            stopped = true;
-            break;
+    loop {
+        // сеть/флуд на этом воркере: сохраняем что есть
+        let next = match iter.next().await {
+            Ok(v) => v,
+            Err(_) => break,
+        };
+        let Some(m) = next else { break };
+        {
+            n += 1;
+            message_ids.insert(m.id());
+            if let Some(r) = m.sender_ref().await.ok().flatten() {
+                authors.insert(r.id, r);
+            }
+            let total_now = done.fetch_add(1, Ordering::Relaxed) + 1;
+            if n % 100 == 0 {
+                state.progress(
+                    "parse_start",
+                    serde_json::json!({
+                        "phase": "messages",
+                        "done": total_now,
+                        "authors": 0, // обновит агрегатор ниже
+                    }),
+                );
+            }
+            if state.parser_cancelled() {
+                stopped = true;
+                break;
+            }
         }
     }
     WorkerResult { authors, message_ids, stopped }
