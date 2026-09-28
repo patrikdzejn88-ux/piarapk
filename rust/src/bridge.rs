@@ -10,7 +10,7 @@ use crate::engine::{auth, chats, connect, import, inviter, scraper, store};
 
 /// Публичные креды Telegram Desktop (как в старом tg-piar); переопределяются
 /// конфигом piar_init.
-const DEFAULT_API_ID: i32 = 2040;
+pub const DEFAULT_API_ID: i32 = 2040;
 const DEFAULT_API_HASH: &str = "b18441a1ff6077106a04f1e0a0f9fb";
 
 fn take_cstr(p: *const c_char) -> String {
@@ -133,7 +133,11 @@ pub extern "C" fn piar_init(config_json: *const c_char) -> c_int {
     }));
     let _ = log::set_boxed_logger(Box::new(EventLogger));
     log::set_max_level(log::LevelFilter::Info);
-    log::info!("piarcore инициализирован");
+    if api_id == DEFAULT_API_ID {
+        log::warn!("piarcore: api_id по умолчанию ({DEFAULT_API_ID}) — Telegram его ОТКЛОНЯЕТ; задай свою пару в настройках приложения (иконка ключа)");
+    } else {
+        log::info!("piarcore: используется своя пара api_id={api_id}");
+    }
     0
 }
 

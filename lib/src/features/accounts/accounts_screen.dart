@@ -138,10 +138,10 @@ class _AccountsScreenState extends State<AccountsScreen> {
   }
 
   Future<void> _showApiSettings() async {
-    final idCtrl = TextEditingController(
-        text: (await SettingsStorage.getApiId())?.toString() ?? '');
-    final hashCtrl =
-        TextEditingController(text: await SettingsStorage.getApiHash() ?? '');
+    final currentId = await SettingsStorage.getApiId();
+    final currentHash = await SettingsStorage.getApiHash();
+    final idCtrl = TextEditingController(text: currentId?.toString() ?? '');
+    final hashCtrl = TextEditingController(text: currentHash ?? '');
     if (!mounted) {
       idCtrl.dispose();
       hashCtrl.dispose();
@@ -157,10 +157,21 @@ class _AccountsScreenState extends State<AccountsScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              Text(
+                currentId == null
+                    ? '⚠ Сейчас используется пара ПО УМОЛЧАНИЮ — Telegram её '
+                        'отклоняет (api_id_invalid). Обязательно заполни поля ниже.'
+                    : 'Сейчас: своя пара (api_id $currentId) ✓',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: currentId == null ? Colors.orangeAccent : Colors.greenAccent,
+                ),
+              ),
+              const SizedBox(height: 10),
               const Text(
-                'Без своей пары Telegram отклоняет вход (api_id_invalid).\n'
                 'Получить: my.telegram.org → войти своим Telegram → '
-                'API development tools → Create new application.',
+                'API development tools → Create new application → '
+                'скопировать App api_id (число) и App api_hash.',
                 style: TextStyle(fontSize: 12),
               ),
               const SizedBox(height: 12),

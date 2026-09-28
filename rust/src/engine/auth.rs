@@ -31,6 +31,16 @@ pub async fn add_account_phone(
         }
     };
     log::info!("add_account_phone: {phone} (пул {pool})");
+
+    // С дефолтной парой Telegram отвечает api_id_invalid — не тратим попытку,
+    // сразу объясняем, что настроить
+    if state.api_id == crate::bridge::DEFAULT_API_ID {
+        return Err(anyhow::anyhow!(
+            "api_id не настроен: открой раздел «Аккаунты» → иконка ключа → "
+            "вставь App api_id и App api_hash со своей страницы my.telegram.org "
+            "(API development tools) → «Сохранить» → перезапусти приложение"
+        ));
+    }
     // погасить прошлую попытку (тот же телефон).
     // ВАЖНО: parking_lot-гард не должен переживать .await (future: Send),
     // поэтому блокировка строго в scoped-блоке до await.
