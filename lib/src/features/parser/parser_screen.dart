@@ -24,6 +24,8 @@ class _ParserScreenState extends State<ParserScreen> {
   StreamSubscription<PiarEvent>? _sub;
 
   List<Map<String, dynamic>> _databases = [];
+  List<Map<String, dynamic>> _accountChats = [];
+  Map<String, dynamic>? _selectedChat;
 
   @override
   void initState() {
@@ -71,9 +73,9 @@ class _ParserScreenState extends State<ParserScreen> {
   }
 
   Future<void> _start() async {
-    final chat = _chatCtrl.text.trim();
-    if (chat.isEmpty) {
-      _snack('Укажите ссылку на чат (@username или t.me/...)');
+    final manual = _chatCtrl.text.trim();
+    if (_selectedChat == null && manual.isEmpty) {
+      _snack('Выбери чат аккаунта или укажи ссылку вручную');
       return;
     }
     setState(() {
@@ -81,11 +83,41 @@ class _ParserScreenState extends State<ParserScreen> {
       _summary = null;
       _progressLine = 'Запуск…';
     });
-    final res = await PiarCore.instance.callAsync('parse_start', {
-      'chat': chat,
-      'limit': int.tryParse(_limitCtrl.text.trim()) ?? 10000,
-    });
+    final res = await PiarCore.instance.callAsync('parse_start', _selectedChat != null
+        ? {
+            'dialog_id': _selectedChat!['id'],
+            'access_hash': _selectedChat!['access_hash'],
+            'title': _selectedChat!['title'] ?? '',
+            'limit': int.tryParse(_limitCtrl.text.trim()) ?? 10000,
+          }
+        : {
+            'chat': manual,
+            'limit': int.tryParse(_limitCtrl.text.trim()) ?? 10000,
+          });
     if (!res.ok && mounted) {
+      setState(() {
+        _busy = false;
+        _progressLine = 'Ошибка: ${res.errorText}';
+      });
+    }
+  }
+
+  Future<void> _loadAccountChats() async {
+    setState(() => _busy = true);
+    final res = await PiarCore.instance.callAsync('list_account_chats', {});
+    if (!mounted) return;
+    if (res.ok && res.data is List) {
+      setState(() {
+        _accountChats = (res.data as List)
+            .whereType<Map>()
+            .map((m) => m.cast<String, dynamic>())
+            .toList();
+        _busy = false;
+        if (_accountChats.isEmpty) {
+          _progressLine = 'На аккаунте парсера нет чатов';
+        }
+      });
+    } else {
       setState(() {
         _busy = false;
         _progressLine = 'Ошибка: ${res.errorText}';
@@ -143,13 +175,57 @@ class _ParserScreenState extends State<ParserScreen> {
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 20),
+              // чаты, которые уже есть на аккаунте парсера
+              Row(
+                children: [
+                  Expanded(
+                    child: Text('Чат аккаунта:',
+                        style: Theme.of(context).textTheme.bodyMedium),
+                  ),
+                  TextButton.icon(
+                    onPressed: _busy ? null : _loadAccountChats,
+                    icon: const Icon(Icons.refresh, size: 18),
+                    label: const Text('Загрузить'),
+                  ),
+                ],
+              ),
+              DropdownButtonFormField<Map<String, dynamic>>(
+                initialValue: _selectedChat,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                    hintText: 'выбрать из чатов аккаунта',
+                    border: OutlineInputBorder()),
+                items: [
+                  for (final c in _accountChats)
+                    DropdownMenuItem(
+                      value: c,
+                      child: Text(
+                        '${c['title'] ?? ''}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ],
+                onChanged: (v) => setState(() {
+                  _selectedChat = v;
+                  if (v != null) _chatCtrl.clear();
+                }),
+              ),
+              const SizedBox(height: 4),
+              Text('…или ссылка вручную:',
+                  style: Theme.of(context).textTheme.bodySmall),
+              const SizedBox(height: 4),
               TextField(
                 controller: _chatCtrl,
                 decoration: const InputDecoration(
-                  labelText: 'Чат (ссылка или @username)',
-                  hintText: '@somechat / https://t.me/somechat',
+                  labelText: '@username / https://t.me/somechat',
                   border: OutlineInputBorder(),
                 ),
+                onChanged: (_) {
+                  if (_selectedChat != null) {
+                    setState(() => _selectedChat = null);
+                  }
+                },
               ),
               const SizedBox(height: 12),
               TextField(

@@ -159,7 +159,9 @@ async fn finalize_import(
         ));
     }
     let me = started.client.get_me().await?;
-    let id = me.id().bare_id().unwrap_or_default().to_string();
+    let user_id = me.id().bare_id().unwrap_or_default().to_string();
+    // id записи: "{user_id}@{pool}" — аккаунт может жить в обоих пулах
+    let record_id = format!("{user_id}@{pool}");
     let session_file = session_path
         .file_name()
         .and_then(|n| n.to_str())
@@ -167,7 +169,7 @@ async fn finalize_import(
         .to_string();
 
     let record = AccountRecord {
-        id: id.clone(),
+        id: record_id.clone(),
         phone: me.phone().unwrap_or_default().to_string(),
         first_name: me.first_name().unwrap_or_default().to_string(),
         last_name: me.last_name().unwrap_or_default().to_string(),
@@ -179,8 +181,14 @@ async fn finalize_import(
     };
     {
         let mut accounts = state.accounts.write();
+        // legacy: запись старого формата id (просто user_id) в этом же пуле
+        if let Some(old) = accounts.get(&user_id) {
+            if old.record.pool == pool {
+                accounts.remove(&user_id);
+            }
+        }
         accounts.insert(
-            id.clone(),
+            record_id.clone(),
             AccountEntry {
                 record,
                 live: Some(LiveAccount {
@@ -191,7 +199,7 @@ async fn finalize_import(
         );
     }
     connect::save_accounts_state(state);
-    Ok(serde_json::json!({ "account_id": id, "stage": "done" }))
+    Ok(serde_json::json!({ "account_id": record_id, "stage": "done" }))
 }
 
 /// Короткий хеш строки для именования файлов сессий.

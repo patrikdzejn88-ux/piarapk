@@ -316,9 +316,16 @@ async fn dispatch_async(
         // ---- парсер (только по сообщениям чата) ----
         "parse_start" => {
             let chat = str_param(params, "chat", "");
+            let dialog_id = params.get("dialog_id").and_then(|v| v.as_i64()).unwrap_or_default();
+            let access_hash = params.get("access_hash").and_then(|v| v.as_i64()).unwrap_or_default();
+            let title = str_param(params, "title", "");
             let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(10000) as usize;
-            log::info!("parse_start: чат {chat}, лимит {limit}");
-            scraper::parse_start(app, &chat, limit).await
+            log::info!("parse_start: чат {chat}, диалог {dialog_id}, лимит {limit}");
+            scraper::parse_start(app, &chat, dialog_id, access_hash, &title, limit).await
+        }
+        // ---- чаты аккаунта парсера (его диалоги) ----
+        "list_account_chats" => {
+            chats::list_account_chats(app).await
         }
         // ---- пиар (один аккаунт, N людей из базы) ----
         "invite_start" => {
@@ -354,7 +361,8 @@ fn map_anyhow(
     r.map_err(|e| auth::err_json("ERROR", e.to_string()))
 }
 
-/// Удалить аккаунт: запись, live-клиент и файл сессии.
+/// Удалить аккаунт: запись, live-клиент и файл сессии (если им не пользуется
+/// другая запись — например, тот же аккаунт во втором пуле).
 async fn delete_account(app: &Arc<AppState>, id: &str) -> anyhow::Result<()> {
     let _ = connect::disconnect_account(app, id).await;
     let session_file = {
@@ -362,7 +370,13 @@ async fn delete_account(app: &Arc<AppState>, id: &str) -> anyhow::Result<()> {
         accounts.remove(id).map(|e| e.record.session_file)
     };
     if let Some(f) = session_file {
-        let _ = std::fs::remove_file(app.sessions_dir().join(f));
+        let used_elsewhere = {
+            let accounts = app.accounts.read();
+            accounts.values().any(|e| e.record.session_file == f)
+        };
+        if !used_elsewhere {
+            let _ = std::fs::remove_file(app.sessions_dir().join(f));
+        }
     }
     connect::save_accounts_state(app);
     Ok(())

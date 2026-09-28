@@ -197,6 +197,42 @@ pub async fn create_readonly_channel(
     }))
 }
 
+/// Чаты, которые уже есть на аккаунте парсера (его диалоги).
+pub async fn list_account_chats(state: &AppState) -> Result<serde_json::Value, serde_json::Value> {
+    let Some(client) = super::connect::connected_client_strict(state, "parser") else {
+        return Err(super::auth::err_json(
+            "NO_PARSER_ACCOUNTS",
+            "нет подключённых аккаунтов в пуле «Парсер» — добавьте и подключите аккаунт",
+        ));
+    };
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    let mut iter = client.iter_dialogs();
+    let mut n = 0usize;
+    while let Some(dialog) = iter
+        .next()
+        .await
+        .map_err(|e| super::auth::err_json("ERROR", format!("диалоги: {e}")))?
+    {
+        let peer = dialog.peer();
+        let title = peer.name().unwrap_or("без названия").to_string();
+        if let Some(r) = peer.to_ref().await.ok().flatten() {
+            if let Some(dialog_id) = r.id.bot_api_dialog_id() {
+                out.push(serde_json::json!({
+                    "id": dialog_id,
+                    "title": title,
+                    "access_hash": r.auth.hash(),
+                }));
+            }
+        }
+        n += 1;
+        if n >= 300 {
+            break;
+        }
+    }
+    log::info!("list_account_chats: диалогов {n}");
+    Ok(serde_json::Value::Array(out))
+}
+
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

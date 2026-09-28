@@ -235,9 +235,13 @@ async fn finalize_login(
     // файл сессии: тот, что создан при add_account_phone (фиксирован в PendingAuth)
     let session_file = p.session_file.clone();
 
+    // id записи: "{user_id}@{pool}" — ОДИН и тот же аккаунт может жить в обоих
+    // пулах (два логина = две авторизации, как два устройства). Заодно убираем
+    // legacy-запись со старым форматом id (просто user_id), если она в этом пуле.
+    let legacy_id = id.clone();
     let entry = AccountEntry {
         record: super::store::AccountRecord {
-            id: id.clone(),
+            id: format!("{id}@{pool2}", id = id, pool2 = p.pool),
             phone,
             first_name,
             last_name,
@@ -255,12 +259,18 @@ async fn finalize_login(
 
     {
         let mut accounts = state.accounts.write();
-        accounts.insert(id.clone(), entry);
+        // legacy: запись старого формата (id = просто user_id)
+        if let Some(old) = accounts.get(&legacy_id) {
+            if old.record.pool == p.pool {
+                accounts.remove(&legacy_id);
+            }
+        }
+        accounts.insert(entry.record.id.clone(), entry);
     }
     state.pending_auths.lock().remove(&p.phone);
     save_accounts_state(state);
 
-    serde_json::json!({ "stage": "done", "account_id": id })
+    serde_json::json!({ "stage": "done", "account_id": format!("{id}@{}", p.pool) })
 }
 
 fn chrono_now() -> i64 {

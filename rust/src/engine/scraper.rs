@@ -79,10 +79,13 @@ async fn scrape_message_authors(
     Ok((saved, skipped))
 }
 
-/// Точка входа: parse_start { chat, limit }.
+/// Точка входа: parse_start { chat | dialog_id+access_hash, title, limit }.
 pub async fn parse_start(
     state: &AppState,
     chat: &str,
+    dialog_id: i64,
+    access_hash: i64,
+    title: &str,
     limit: usize,
 ) -> Result<serde_json::Value, serde_json::Value> {
     // парсер работает ТОЛЬКО на пуле «parser» (строгая изоляция, без fallback)
@@ -92,26 +95,46 @@ pub async fn parse_start(
             "нет подключённых аккаунтов в пуле «Парсер» — добавьте и подключите аккаунт в разделе «Аккаунты» (вкладка «Парсер»)",
         ));
     };
-    let peer: Peer = client
-        .resolve_username(&super::chats::normalize_chat_link(chat))
-        .await
-        .map_err(|e| super::auth::err_json("ERROR", format!("ошибка поиска чата: {e}")))?
-        .ok_or_else(|| {
-            super::auth::err_json("CHAT_NOT_FOUND", "чат не найден (resolve_username=None)")
-        })?;
-    let peer_ref = peer
-        .to_ref()
-        .await
-        .map_err(|e| super::auth::err_json("ERROR", format!("to_ref: {e}")))?
-        .ok_or_else(|| super::auth::err_json("ERROR", "пустой PeerRef"))?;
 
-    let base_name = sanitize_name(&super::chats::normalize_chat_link(chat));
+    // источник: выбранный диалог аккаунта (dialog_id) ИЛИ ссылка/@username
+    let (peer_ref, base_name) = if dialog_id != 0 {
+        let pid = grammers_session::types::PeerId::from_bot_api_dialog_id(dialog_id)
+            .ok_or_else(|| super::auth::err_json("ERROR", "некорректный dialog_id"))?;
+        let name = if title.trim().is_empty() {
+            format!("chat{dialog_id}")
+        } else {
+            sanitize_name(title.trim())
+        };
+        (
+            grammers_session::types::PeerRef {
+                id: pid,
+                auth: grammers_session::types::PeerAuth::from_hash(access_hash),
+            },
+            name,
+        )
+    } else {
+        let peer: Peer = client
+            .resolve_username(&super::chats::normalize_chat_link(chat))
+            .await
+            .map_err(|e| super::auth::err_json("ERROR", format!("ошибка поиска чата: {e}")))?
+            .ok_or_else(|| {
+                super::auth::err_json("CHAT_NOT_FOUND", "чат не найден (resolve_username=None)")
+            })?;
+        let peer_ref = peer
+            .to_ref()
+            .await
+            .map_err(|e| super::auth::err_json("ERROR", format!("to_ref: {e}")))?
+            .ok_or_else(|| super::auth::err_json("ERROR", "пустой PeerRef"))?;
+        let name = sanitize_name(&super::chats::normalize_chat_link(chat));
+        (peer_ref, name)
+    };
 
     state.progress("parse_start", serde_json::json!({ "done": 0, "total": limit }));
 
-    let (saved, skipped) = scrape_message_authors(state, &client, peer_ref, limit, &base_name)
-        .await
-        .map_err(|e| super::auth::err_json("ERROR", e))?;
+    let (saved, skipped) =
+        scrape_message_authors(state, &client, peer_ref, limit, &base_name)
+            .await
+            .map_err(|e| super::auth::err_json("ERROR", e))?;
 
     Ok(serde_json::json!({
         "saved": saved,
