@@ -2,10 +2,11 @@ import 'dart:io';
 
 import 'package:flutter/widgets.dart';
 
+import 'package:piarapk/src/settings/settings.dart';
 import 'src/app.dart';
 import 'src/core/bridge.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // Ошибки релиз-сборки больше не молчат: всё пишется в журнал приложения
@@ -16,11 +17,15 @@ void main() {
   };
 
   // Каталог данных приложения создаётся мостом при init(); принудительно
-  // готовим рабочую папку до запуска UI, чтобы файловые операции UI
-  // (настройки магазина и пр.) не падали.
+  // готовим рабочую папку до запуска UI.
   try {
     Directory('data').createSync(recursive: true);
   } catch (_) {}
-  PiarCore.instance.init();
+
+  // Своя пара api_id/api_hash (my.telegram.org) — если задана в настройках,
+  // передаём в ядро; иначе ядро использует публичную (может отклоняться).
+  final apiId = await SettingsStorage.getApiId();
+  final apiHash = await SettingsStorage.getApiHash();
+  PiarCore.instance.init(apiId: apiId, apiHash: apiHash);
   runApp(const PiarApp());
 }

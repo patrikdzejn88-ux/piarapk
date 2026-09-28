@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/bridge.dart';
 import '../../core/version.dart';
+import '../../settings/settings.dart';
 import 'account.dart';
 import 'accounts_controller.dart';
 import 'add_account_dialog.dart';
@@ -63,6 +64,11 @@ class _AccountsScreenState extends State<AccountsScreen> {
             ],
           ),
           actions: [
+            IconButton(
+              tooltip: 'Настройки Telegram API (api_id/api_hash)',
+              icon: const Icon(Icons.key_outlined),
+              onPressed: _showApiSettings,
+            ),
             IconButton(
               tooltip: 'Лог ядра (диагностика)',
               icon: const Icon(Icons.terminal_outlined),
@@ -129,6 +135,73 @@ class _AccountsScreenState extends State<AccountsScreen> {
         );
       }
     }
+  }
+
+  Future<void> _showApiSettings() async {
+    final idCtrl = TextEditingController(
+        text: (await SettingsStorage.getApiId())?.toString() ?? '');
+    final hashCtrl =
+        TextEditingController(text: await SettingsStorage.getApiHash() ?? '');
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Telegram API'),
+        content: SizedBox(
+          width: 460,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'Без своей пары Telegram отклоняет вход (api_id_invalid).\n'
+                'Получить: my.telegram.org → войти своим Telegram → '
+                'API development tools → Create new application.',
+                style: TextStyle(fontSize: 12),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: idCtrl,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                    labelText: 'App api_id (число)',
+                    border: OutlineInputBorder()),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: hashCtrl,
+                decoration: const InputDecoration(
+                    labelText: 'App api_hash',
+                    border: OutlineInputBorder()),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              await SettingsStorage.setApiPair(
+                int.tryParse(idCtrl.text.trim()),
+                hashCtrl.text.trim(),
+              );
+              if (dialogContext.mounted) {
+                Navigator.pop(dialogContext);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                      content: Text('Сохранено. Перезапусти приложение')),
+                );
+              }
+            },
+            child: const Text('Сохранить'),
+          ),
+        ],
+      ),
+    );
+    idCtrl.dispose();
+    hashCtrl.dispose();
   }
 
   Future<void> _showLogs() async {

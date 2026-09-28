@@ -116,9 +116,12 @@ class PiarCore {
 
   /// Инициализация (идемпотентна: параллельные вызовы дают один и тот же
   /// Future — один поллер, одна загрузка библиотеки).
-  Future<void> init() => _initFuture ??= _doInit();
+  /// apiId/apiHash — своя пара с my.telegram.org (без неё — публичная
+  /// пара по умолчанию, которую Telegram может отклонять: api_id_invalid).
+  Future<void> init({int? apiId, String? apiHash}) =>
+      _initFuture ??= _doInit(apiId, apiHash);
 
-  Future<void> _doInit() async {
+  Future<void> _doInit(int? apiId, String? apiHash) async {
     if (Platform.isAndroid) {
       // libpiarcore.so предзагружается в MainActivity (System.loadLibrary);
       // dlopen по имени резолвится из nativeLibraryDir приложения.
@@ -193,7 +196,11 @@ class PiarCore {
     if (!dataDir.existsSync()) {
       dataDir.createSync(recursive: true);
     }
-    final cfg = jsonEncode({'data_dir': dataDir.absolute.path});
+    final cfg = jsonEncode({
+      'data_dir': dataDir.absolute.path,
+      if (apiId != null) 'api_id': apiId,
+      if (apiHash != null && apiHash.isNotEmpty) 'api_hash': apiHash,
+    });
     final cfgPtr = cfg.toNativeUtf8().cast<ffi.Uint8>();
     try {
       _piarInit(cfgPtr);

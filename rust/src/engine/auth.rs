@@ -12,17 +12,31 @@ use super::state::{AccountEntry, AppState, LiveAccount, PendingAuth};
 
 /// Отправить код на телефон (создаёт временную сессию и PendingAuth).
 /// Повторный вызов гасит прошлую попытку и отправляет НОВЫЙ код.
+/// Номер нормализуется: мусор-символы вон, '+' подставляется автоматически.
 pub async fn add_account_phone(
     state: &AppState,
     pool: &str,
-    phone: &str,
+    raw_phone: &str,
 ) -> anyhow::Result<serde_json::Value> {
+    let phone: String = {
+        let cleaned: String = raw_phone
+            .trim()
+            .chars()
+            .filter(|c| *c != ' ' && *c != '-' && *c != '(' && *c != ')' && *c != '\u{a0}')
+            .collect();
+        if cleaned.starts_with('+') {
+            cleaned
+        } else {
+            format!("+{cleaned}")
+        }
+    };
+    log::info!("add_account_phone: {phone} (пул {pool})");
     // погасить прошлую попытку (тот же телефон).
     // ВАЖНО: parking_lot-гард не должен переживать .await (future: Send),
     // поэтому блокировка строго в scoped-блоке до await.
     let old = {
         let mut map = state.pending_auths.lock();
-        map.remove(phone)
+        map.remove(phone.as_str())
     };
     if let Some(old) = old {
         let p = old.lock().await;
@@ -82,7 +96,7 @@ pub async fn add_account_phone(
     // таймаут сети: без него недоступная сеть = вечный спиннер вместо ошибки
     let login_token: LoginToken = tokio::time::timeout(
         std::time::Duration::from_secs(30),
-        client.request_login_code(phone, &state.api_hash),
+        client.request_login_code(phone.as_str(), &state.api_hash),
     )
     .await
     .map_err(|_| anyhow::anyhow!("таймаут сети (30 с) — проверьте интернет-соединение"))?

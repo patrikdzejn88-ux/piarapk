@@ -68,4 +68,33 @@ class SettingsStorage {
     }
     await _flush();
   }
+
+  /// ---- Telegram API (api_id/api_hash с my.telegram.org) ----
+
+  static Future<int?> getApiId() async {
+    await _load();
+    final v = _cache['telegram_api_id'];
+    if (v is int) return v;
+    return int.tryParse('${v ?? ''}');
+  }
+
+  static Future<String?> getApiHash() async {
+    await _load();
+    return _cache['telegram_api_hash'] as String?;
+  }
+
+  static Future<void> setApiPair(int? id, String? hash) async {
+    await _load();
+    if (id == null) {
+      _cache.remove('telegram_api_id');
+    } else {
+      _cache['telegram_api_id'] = id;
+    }
+    if (hash == null || hash.isEmpty) {
+      _cache.remove('telegram_api_hash');
+    } else {
+      _cache['telegram_api_hash'] = hash;
+    }
+    await _flush();
+  }
 }
