@@ -5,13 +5,18 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.util.Log
-import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import androidx.activity.result.contract.ActivityResultContracts
 import java.io.File
 
-class MainActivity : FlutterActivity() {
+/**
+ * FlutterFragmentActivity (НЕ FlutterActivity!): только он наследует
+ * androidx ComponentActivity, где доступен registerForActivityResult
+ * для системного выбора картинки.
+ */
+class MainActivity : FlutterFragmentActivity() {
     companion object {
         /**
          * Предзагрузка Rust-ядра (libpiarcore.so) до старта Flutter:
@@ -42,25 +47,27 @@ class MainActivity : FlutterActivity() {
                 result.success(null)
                 return@registerForActivityResult
             }
-            try {
-                // копируем выбранную картинку в файлы приложения (稳定的 путь для Rust)
-                val ext = when (contentResolver.getType(uri)) {
-                    "image/png" -> "png"
-                    "image/webp" -> "webp"
-                    else -> "jpg"
+            // копирование в фоне (не блокируем main thread / ANR)
+            Thread {
+                val path: String? = try {
+                    // копируем выбранную картинку в файлы приложения (стабильный
+                    // путь для Rust-загрузки)
+                    val ext = when (contentResolver.getType(uri)) {
+                        "image/png" -> "png"
+                        "image/webp" -> "webp"
+                        else -> "jpg"
+                    }
+                    val out = File(filesDir, "picked_image.$ext")
+                    contentResolver.openInputStream(uri)?.use { input ->
+                        out.outputStream().use { output -> input.copyTo(output) }
+                    }
+                    out.absolutePath
+                } catch (e: Exception) {
+                    Log.e("piarapk", "pickImage copy failed", e)
+                    null
                 }
-                val out = File(filesDir, "picked_image.$ext")
-                contentResolver.openInputStream(uri)?.use { input ->
-                    out.outputStream().use { output -> input.copyTo(output) }
-                } ?: run {
-                    result.success(null)
-                    return@registerForActivityResult
-                }
-                result.success(out.absolutePath)
-            } catch (e: Exception) {
-                Log.e("piarapk", "pickImage copy failed", e)
-                result.success(null)
-            }
+                runOnUiThread { result.success(path) }
+            }.start()
         }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
