@@ -36,9 +36,7 @@ pub async fn add_account_phone(
     // сразу объясняем, что настроить
     if state.api_id == crate::bridge::DEFAULT_API_ID {
         return Err(anyhow::anyhow!(
-            "api_id не настроен: открой раздел «Аккаунты» → иконка ключа → "
-            "вставь App api_id и App api_hash со своей страницы my.telegram.org "
-            "(API development tools) → «Сохранить» → перезапусти приложение"
+            "api_id не настроен: открой раздел «Аккаунты» → иконка ключа → вставь App api_id и App api_hash со своей страницы my.telegram.org (API development tools) → «Сохранить» → перезапусти приложение"
         ));
     }
     // погасить прошлую попытку (тот же телефон).
