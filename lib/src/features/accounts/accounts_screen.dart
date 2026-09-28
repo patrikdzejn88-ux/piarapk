@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/bridge.dart';
+import '../../core/version.dart';
 import 'account.dart';
 import 'accounts_controller.dart';
 import 'add_account_dialog.dart';
@@ -45,7 +46,22 @@ class _AccountsScreenState extends State<AccountsScreen> {
         backgroundColor: Colors.transparent,
         appBar: AppBar(
           backgroundColor: Colors.transparent,
-          title: const Text('Аккаунты'),
+          title: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Аккаунты'),
+              Text(
+                AppVersion.display,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withValues(alpha: 0.5),
+                    ),
+              ),
+            ],
+          ),
           actions: [
             IconButton(
               tooltip: 'Лог ядра (диагностика)',
@@ -104,7 +120,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
     await showDialog<void>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Лог ядра'),
+        title: Text('Лог ядра · ${AppVersion.display}'),
         content: SizedBox(
           width: 480,
           height: 420,
