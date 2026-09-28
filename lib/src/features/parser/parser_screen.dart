@@ -61,9 +61,8 @@ class _ParserScreenState extends State<ParserScreen> {
     if (e.method != 'parse_start') return;
     if (e.type == 'progress' && mounted) {
       final d = e.data;
-      final phase = d?['phase'] == 'resolve' ? 'резолв usernames' : 'сообщений';
-      setState(() => _progressLine =
-          'Фаза: $phase — ${d?['done'] ?? 0}/${d?['total'] ?? 0} · авторов: ${d?['authors'] ?? 0}');
+      final phase = d?['phase'] == 'resolve' ? 'резолв' : 'сообщений';
+      setState(() => _progressLine = 'Обработано $phase: ${d?['done'] ?? 0}');
     }
     if (e.type == 'result' && mounted) {
       setState(() {

@@ -1,8 +1,7 @@
 //! Парсер: сбор участников чата ПО АВТОРАМ последних сообщений.
-//! Ускорение: (1) K параллельных обходчиков сообщений (по offset_id-окнам);
-//! (2) батч-резолв usernames через users.getUsers по 100 штук за запрос,
-//! чанки тоже параллельно; (3) поддержка остановки (parse_cancel) с
-//! сохранением уже собранного.
+//! Ускорение (как в gramjs-боте): raw messages.getHistory — юзернеймы
+//! приходят В ТОМ ЖЕ ответе (вектор users), второй проход не нужен вообще.
+//! K параллельных обходчиков по offset-окнам + поддержка остановки.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -17,69 +16,131 @@ use super::store::{sanitize_name, UserDatabase};
 /// Параллельных обходчиков сообщений.
 const MSG_WORKERS: usize = 4;
 
-/// Сколько InputUser резолвится за один users.getUsers.
-const RESOLVE_CHUNK: usize = 100;
+/// Сообщений за один getHistory (потолок протокола).
+const PAGE: i32 = 100;
 
-/// Параллельно чанков GetUsers.
-const RESOLVE_WORKERS: usize = 4;
-
-/// Результат одного обходчика.
+/// Результат обходчика.
 struct WorkerResult {
-    authors: HashMap<grammers_session::types::PeerId, PeerRef>,
+    /// user_id → username (только авторы, встреченные в сообщениях)
+    usernames: HashMap<i64, String>,
+    /// id сообщений (для счётчика и дедупа)
     message_ids: HashSet<i32>,
+    /// id авторов без username / не из вектора users
+    no_username: HashSet<i64>,
     stopped: bool,
 }
 
-/// Обходчик: сообщения старше offset_id, максимум limit штук.
-#[allow(clippy::too_many_arguments)]
+/// Извлечь (messages, users) из ответа getHistory.
+fn extract_payload(
+    resp: grammers_tl_types::enums::messages::Messages,
+) -> (Vec<grammers_tl_types::enums::Message>, Vec<grammers_tl_types::enums::User>) {
+    use grammers_tl_types::enums::messages::Messages as M;
+    match resp {
+        M::Messages(m) => (m.messages, m.users),
+        M::Slice(m) => (m.messages, m.users),
+        M::ChannelMessages(m) => (m.messages, m.users),
+        M::NotModified(_) => (Vec::new(), Vec::new()),
+    }
+}
+
+/// Обходчик: страницы getHistory от offset_id (эксклюзивно) вниз,
+/// до limit сообщений.
 async fn scan_worker(
     client: Client,
-    peer_ref: PeerRef,
-    offset_id: i32,
+    input_peer: grammers_tl_types::enums::InputPeer,
+    start_offset_id: i32,
     limit: usize,
     state: &AppState,
     done: &AtomicUsize,
 ) -> WorkerResult {
-    let mut authors = HashMap::new();
+    let mut usernames: HashMap<i64, String> = HashMap::new();
     let mut message_ids = HashSet::new();
-    let mut n = 0usize;
+    let mut no_username: HashSet<i64> = HashSet::new();
     let mut stopped = false;
-    let mut iter = if offset_id > 0 {
-        client.iter_messages(peer_ref).offset_id(offset_id).limit(limit)
-    } else {
-        client.iter_messages(peer_ref).limit(limit)
-    };
-    loop {
-        // сеть/флуд на этом воркере: сохраняем что есть
-        let next = match iter.next().await {
-            Ok(v) => v,
-            Err(_) => break,
+    let mut got = 0usize;
+    let mut offset_id = start_offset_id;
+
+    while got < limit {
+        if state.parser_cancelled() {
+            stopped = true;
+            break;
+        }
+        let remaining = (limit - got) as i32;
+        let request = grammers_tl_types::functions::messages::GetHistory {
+            peer: input_peer.clone(),
+            offset_id,
+            offset_date: 0,
+            add_offset: 0,
+            limit: PAGE.min(remaining),
+            max_id: 0,
+            min_id: 0,
+            hash: 0,
         };
-        let Some(m) = next else { break };
-        {
-            n += 1;
-            message_ids.insert(m.id());
-            if let Some(r) = m.sender_ref().await.ok().flatten() {
-                authors.insert(r.id, r);
-            }
-            let total_now = done.fetch_add(1, Ordering::Relaxed) + 1;
-            if n % 100 == 0 {
-                state.progress(
-                    "parse_start",
-                    serde_json::json!({
-                        "phase": "messages",
-                        "done": total_now,
-                        "authors": 0, // обновит агрегатор ниже
-                    }),
-                );
-            }
-            if state.parser_cancelled() {
-                stopped = true;
+        let resp = match client.invoke(&request).await {
+            Ok(r) => r,
+            Err(e) => {
+                // сеть/флуд на этом воркере: сохраняем собранное
+                log::warn!("parse: getHistory прерван: {e}");
                 break;
             }
+        };
+        let (messages, users) = extract_payload(resp);
+        if messages.is_empty() {
+            break;
         }
+
+        // юзернеймы из этого же ответа
+        let mut page_users: HashMap<i64, String> = HashMap::new();
+        for u in &users {
+            if let grammers_tl_types::enums::User::User(user) = u {
+                if let Some(un) = &user.username {
+                    if !un.is_empty() {
+                        page_users.insert(user.id, un.clone());
+                    }
+                }
+            }
+        }
+
+        let mut min_id = i32::MAX;
+        for msg in &messages {
+            let (id, from_user) = match msg {
+                grammers_tl_types::enums::Message::Message(m) => (
+                    m.id,
+                    m.from_id.as_ref(),
+                ),
+                // служебные (вступления и т.п.) — учитываем id для пейджинга,
+                // авторы оттуда не нужны
+                grammers_tl_types::enums::Message::Service(s) => (s.id, None),
+                _ => continue,
+            };
+            message_ids.insert(id);
+            min_id = min_id.min(id);
+            if let Some(grammers_tl_types::enums::Peer::User(pu)) = from_user {
+                let uid = pu.user_id;
+                if let Some(un) = page_users.get(&uid) {
+                    usernames.insert(uid, un.clone());
+                } else {
+                    no_username.insert(uid);
+                }
+            }
+        }
+        let page_len = messages.len();
+        got += page_len;
+        let total_now = done.fetch_add(page_len, Ordering::Relaxed) + page_len;
+        state.progress(
+            "parse_start",
+            serde_json::json!({
+                "phase": "messages",
+                "done": total_now,
+            }),
+        );
+        if min_id == i32::MAX || min_id <= 1 {
+            break; // дошли до начала истории
+        }
+        offset_id = min_id; // offset_id эксклюзивный: строго старее
     }
-    WorkerResult { authors, message_ids, stopped }
+
+    WorkerResult { usernames, message_ids, no_username, stopped }
 }
 
 /// Точка входа: parse_start { chat | dialog_id+access_hash, title, limit }.
@@ -110,7 +171,7 @@ pub async fn parse_start(
             sanitize_name(title.trim())
         };
         (
-            grammers_session::types::PeerRef {
+            PeerRef {
                 id: pid,
                 auth: grammers_session::types::PeerAuth::from_hash(access_hash),
             },
@@ -133,10 +194,10 @@ pub async fn parse_start(
         (peer_ref, name)
     };
 
-    // ---------- фаза 1: K параллельных обходчиков ----------
     let limit = limit.clamp(1, 1_000_000);
+    let input_peer: grammers_tl_types::enums::InputPeer = (&peer_ref).into();
 
-    // верхняя граница id (для разбиения на окна)
+    // верхняя граница id — для разбиения на окна
     let top_id: i32 = {
         let mut it = client.iter_messages(peer_ref).limit(1);
         match it.next().await {
@@ -147,24 +208,30 @@ pub async fn parse_start(
 
     let done = AtomicUsize::new(0);
     let mut stopped = false;
-    let mut authors: HashMap<grammers_session::types::PeerId, PeerRef> = HashMap::new();
+    let mut usernames: HashMap<i64, String> = HashMap::new();
+    let mut no_username: HashSet<i64> = HashSet::new();
     let mut message_ids: HashSet<i32> = HashSet::new();
 
     if top_id <= 0 {
-        // пустой чат/нет сообщений — сразу финальная фаза
         log::info!("parse {base_name}: сообщений не найдено");
     } else {
         let per = (limit / MSG_WORKERS).max(1);
-        // окна по offset_id: воркер k стартует старее (top_id - k*per)
         let mut futs = Vec::with_capacity(MSG_WORKERS);
         for k in 0..MSG_WORKERS {
-            let offset = top_id.saturating_sub((k * per) as i32);
+            // k=0: top_id+1 — offset_id эксклюзивный, иначе пропустим самое
+            // свежее сообщение
+            let span = (k * per) as i32;
+            let offset = if k == 0 {
+                top_id.saturating_add(1)
+            } else {
+                top_id.saturating_sub(span)
+            };
             if offset <= 0 && k > 0 {
                 break;
             }
             futs.push(scan_worker(
                 client.clone(),
-                peer_ref,
+                input_peer.clone(),
                 offset,
                 per,
                 state,
@@ -176,89 +243,33 @@ pub async fn parse_start(
             if r.stopped {
                 stopped = true;
             }
-            authors.extend(r.authors);
+            usernames.extend(r.usernames);
+            no_username.extend(r.no_username);
             message_ids.extend(r.message_ids);
         }
         log::info!(
-            "parse {base_name}: сообщений {}, уникальных авторов {}",
+            "parse {base_name}: сообщений {}, авторов с username {}, без {}",
             message_ids.len(),
-            authors.len()
+            usernames.len(),
+            no_username.len()
         );
     }
+
+    // ---------- сохранить базу ----------
     let messages_done = message_ids.len();
-
-    // ---------- фаза 2: параллельный батч-резолв usernames ----------
-    let refs: Vec<PeerRef> = authors.values().cloned().collect();
-    let total_authors = refs.len();
-    let mut usernames: Vec<String> = Vec::new();
-    let mut no_username = 0usize;
-
-    let chunks: Vec<&[PeerRef]> = refs.chunks(RESOLVE_CHUNK).collect();
-    // параллельно — но ограниченно (RESOLVE_WORKERS за раз): 100+ одновременных
-    // GetUsers почти гарантированно ловят FLOOD_WAIT
-    let mut resolved = 0usize;
-    for group in chunks.chunks(RESOLVE_WORKERS) {
-        let group_results = futures_util::future::join_all(
-            group.iter().map(|chunk| {
-                let client = client.clone();
-                async move {
-                    let ids: Vec<grammers_tl_types::enums::InputUser> =
-                        chunk.iter().map(|r| r.into()).collect();
-                    let request =
-                        grammers_tl_types::functions::users::GetUsers { id: ids };
-                    client.invoke(&request).await
-                }
-            }),
-        )
-        .await;
-
-        for res in group_results {
-            match res {
-                Ok(users) => {
-                    for u in users {
-                        if let grammers_tl_types::enums::User::User(user) = u {
-                            match user.username {
-                                Some(un) if !un.is_empty() => usernames.push(un),
-                                _ => no_username += 1,
-                            }
-                        } else {
-                            no_username += 1;
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::warn!("parse: чанк не разрезолвился: {e}");
-                    no_username += RESOLVE_CHUNK;
-                }
-            }
-            resolved = (resolved + RESOLVE_CHUNK).min(total_authors);
-        }
-        state.progress(
-            "parse_start",
-            serde_json::json!({
-                "phase": "resolve",
-                "done": resolved,
-                "total": total_authors,
-            }),
-        );
-        if state.parser_cancelled() {
-            stopped = true;
-            break;
-        }
-    }
-
-    // ---------- фаза 3: сохранить базу ----------
+    let list: Vec<String> = usernames.into_values().collect();
+    let skipped = no_username.len();
     let path = UserDatabase::path_for(&state.dbs_dir(), &base_name);
-    let saved = UserDatabase::append_unique(&path, &usernames)
+    let saved = UserDatabase::append_unique(&path, &list)
         .map_err(|e| super::auth::err_json("ERROR", e.to_string()))?;
-    log::info!("parse {base_name}: usernames {}, сохранено {saved}", usernames.len());
+    log::info!("parse {base_name}: сохранено {saved}");
 
     Ok(serde_json::json!({
         "saved": saved,
-        "skipped": no_username,
+        "skipped": skipped,
         "base": base_name,
         "messages": messages_done,
-        "authors": total_authors,
+        "authors": saved + skipped,
         "stopped": stopped,
     }))
 }
