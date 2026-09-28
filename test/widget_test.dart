@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:piarapk/src/app.dart';
@@ -27,5 +28,20 @@ void main() {
 
     // Ключа нет → открывается диалог ввода API-ключа dark.shopping
     expect(find.text('API-ключ dark.shopping'), findsWidgets);
+  });
+
+  testWidgets('Кнопка «Добавить аккаунт» открывает диалог добавления',
+      (tester) async {
+    await tester.pumpWidget(const PiarApp());
+
+    await tester.tap(find.text('Добавить аккаунт'));
+    await tester.pumpAndSettle();
+
+    // диалог открыт: выбор способа добавления
+    expect(find.text('По номеру телефона (код + 2FA)'), findsOneWidget);
+    expect(find.text('Из StringSession (telethon/gramjs)'), findsOneWidget);
+    expect(find.text('Из tdata (zip-архив)'), findsOneWidget);
+    // никакого «Диалог не открылся»
+    expect(find.byType(SnackBar), findsNothing);
   });
 }

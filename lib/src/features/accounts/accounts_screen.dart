@@ -96,23 +96,28 @@ class _AccountsScreenState extends State<AccountsScreen> {
             ),
           ],
         ),
-        floatingActionButton: FloatingActionButton.extended(
-          onPressed: _openAddDialog,
-          icon: const Icon(Icons.person_add_alt),
-          label: const Text('Добавить аккаунт'),
+        floatingActionButton: Builder(
+          // контекст ПОД DefaultTabController: только отсюда .maybeOf находит
+          // таб-контроллер (контекст самого State — выше него, и .of падал
+          // с «null check operator»)
+          builder: (fabContext) => FloatingActionButton.extended(
+            onPressed: () => _openAddDialog(fabContext),
+            icon: const Icon(Icons.person_add_alt),
+            label: const Text('Добавить аккаунт'),
+          ),
         ),
       ),
     );
   }
 
-  Future<void> _openAddDialog() async {
+  Future<void> _openAddDialog(BuildContext fabContext) async {
     PiarCore.instance.note('нажато «Добавить аккаунт»');
     try {
-      final tabController = DefaultTabController.of(context);
-      final pool = tabController.index == 0 ? 'piar' : 'parser';
+      final tabController = DefaultTabController.maybeOf(fabContext);
+      final pool = (tabController?.index ?? 0) == 0 ? 'piar' : 'parser';
       PiarCore.instance.note('открываю диалог, пул: $pool');
       await showDialog<void>(
-        context: context,
+        context: fabContext,
         barrierDismissible: false,
         builder: (_) => AddAccountDialog(controller: _controller, pool: pool),
       );
