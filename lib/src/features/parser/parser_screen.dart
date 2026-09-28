@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/bridge.dart';
 import '../../core/native.dart';
+import '../../ui/theme.dart';
 
 /// Раздел «Парсер»: сбор участников чата по авторам последних сообщений.
 /// Работает на ОТДЕЛЬНОМ пуле аккаунтов («Парсер»).
@@ -70,6 +71,8 @@ class _ParserScreenState extends State<ParserScreen> {
         _summary = e.ok && e.data is Map ? e.data as Map<String, dynamic> : null;
         _progressLine = e.ok ? null : 'Ошибка: ${e.error}';
       });
+      // сервис останавливает глобальный слушатель (app.dart) — работает
+      // даже если этот экран уже закрыт
       _reloadDatabases();
     }
   }
@@ -85,6 +88,10 @@ class _ParserScreenState extends State<ParserScreen> {
       _summary = null;
       _progressLine = 'Запуск…';
     });
+    // держим процесс живым в фоне, пока идёт сбор
+    final chatTitle =
+        _selectedChat?['title']?.toString() ?? _chatCtrl.text.trim();
+    await Native.parserServiceStart('Сбор базы: $chatTitle');
     final res = await PiarCore.instance.callAsync('parse_start', _selectedChat != null
         ? {
             'dialog_id': _selectedChat!['id'],
@@ -101,6 +108,7 @@ class _ParserScreenState extends State<ParserScreen> {
         _busy = false;
         _progressLine = 'Ошибка: ${res.errorText}';
       });
+      Native.parserServiceStop();
     }
   }
 
@@ -283,9 +291,8 @@ class _ParserScreenState extends State<ParserScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text('Парсер участников',
-                  style: Theme.of(context).textTheme.titleLarge,
-                  textAlign: TextAlign.center),
+              GradientText('Парсер участников',
+                  style: Theme.of(context).textTheme.headlineSmall),
               const SizedBox(height: 4),
               Text(
                 'Собирает авторов последних сообщений чата. Работает на отдельном пуле «Парсер», чтобы не жечь пиар-аккаунты.',
@@ -358,16 +365,11 @@ class _ParserScreenState extends State<ParserScreen> {
               Row(
                 children: [
                   Expanded(
-                    child: FilledButton.icon(
-                      onPressed: _busy ? null : _start,
-                      icon: _busy
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.play_arrow_outlined),
-                      label: Text(_busy ? 'Собираем…' : 'Собрать'),
+                    child: GradientButton(
+                      onPressed: _start,
+                      busy: _busy,
+                      label: _busy ? 'Собираем…' : 'Собрать',
+                      icon: const Icon(Icons.play_arrow_outlined),
                     ),
                   ),
                   if (_busy) ...[

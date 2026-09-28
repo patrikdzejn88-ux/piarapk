@@ -1,8 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- СЕТЬ ОБЯЗАТЕЛЬНА: без этого права release-APK не может подключиться
-         к Telegram (в debug-манифесте право есть, во release его НЕ было —
-         все MTProto-подключения падали с EACCES) -->
+    <!-- СЕТЬ: MTProto-подключения к Telegram -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Парсер в фоне: не умирает при сворачивании/закрытии приложения -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
         android:label="piarapk"
         android:name="${applicationName}"
@@ -34,6 +36,11 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- Сервис парсинга в фоне (держит процесс живым) -->
+        <service
+            android:name=".ParserService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"/>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

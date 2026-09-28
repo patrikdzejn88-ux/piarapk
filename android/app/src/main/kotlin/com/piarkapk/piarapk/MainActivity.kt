@@ -1,10 +1,13 @@
 package com.piarkapk.piarapk
 
 import android.content.ContentValues
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.util.Log
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -87,6 +90,36 @@ class MainActivity : FlutterFragmentActivity() {
                     } else {
                         pendingPickResult = result
                         pickImageLauncher.launch(arrayOf("image/*"))
+                    }
+                }
+                "parser_service_start" -> {
+                    try {
+                        // API 33+: просим показ уведомления (сервис работает и без него)
+                        if (Build.VERSION.SDK_INT >= 33) {
+                            ActivityCompat.requestPermissions(
+                                this,
+                                arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
+                                4711
+                            )
+                        }
+                        val intent = Intent(this, ParserService::class.java)
+                            .putExtra(
+                                "text",
+                                call.argument<String>("text") ?: "Сбор базы участников…"
+                            )
+                        ContextCompat.startForegroundService(this, intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e("piarapk", "parser_service_start failed", e)
+                        result.error("FGS_FAIL", e.message, null)
+                    }
+                }
+                "parser_service_stop" -> {
+                    try {
+                        stopService(Intent(this, ParserService::class.java))
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("FGS_FAIL", e.message, null)
                     }
                 }
                 "exportToDownloads" -> handleExport(call, result)

@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 
 import 'core/bridge.dart';
+import 'core/native.dart';
 import 'features/accounts/accounts_screen.dart';
 import 'features/parser/parser_screen.dart';
 import 'features/piar/piar_screen.dart';
 import 'features/shop/shop_screen.dart';
+import 'ui/theme.dart';
 
 class PiarApp extends StatelessWidget {
   const PiarApp({super.key});
@@ -14,13 +16,7 @@ class PiarApp extends StatelessWidget {
     return MaterialApp(
       title: 'piarapk',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF3FA7FF),
-          brightness: Brightness.dark,
-        ),
-        useMaterial3: true,
-      ),
+      theme: AppTheme.dark(),
       home: const _Shell(),
     );
   }
@@ -47,6 +43,13 @@ class _ShellState extends State<_Shell> {
   void initState() {
     super.initState();
     PiarCore.instance.init();
+    // глобальный слушатель: сбор закончен (в т.ч. остановлен/ошибка) —
+    // останавливаем фоновый сервис, даже если экран парсера уже закрыт
+    PiarCore.instance.events.listen((e) {
+      if (e.type == 'result' && e.method == 'parse_start') {
+        Native.parserServiceStop();
+      }
+    });
   }
 
   static Widget _page(int i) => switch (i) {

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/bridge.dart';
 import '../../core/native.dart';
+import '../../ui/theme.dart';
 
 /// Раздел «Пиар»: ОДИН аккаунт (владелец чата) добавляет людей из базы
 /// в чат и отправляет сообщение. Чат — read-only для участников.
@@ -172,9 +173,8 @@ class _PiarScreenState extends State<PiarScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text('Пиар: инвайты в чат',
-                  style: Theme.of(context).textTheme.titleLarge,
-                  textAlign: TextAlign.center),
+              GradientText('Пиар: инвайты в чат',
+                  style: Theme.of(context).textTheme.headlineSmall),
               const SizedBox(height: 4),
               Text(
                 'Работает ОДИН аккаунт из пула «Пиар» — он же владелец чата. '
@@ -261,16 +261,11 @@ class _PiarScreenState extends State<PiarScreen> {
                 ],
               ),
               const SizedBox(height: 16),
-              FilledButton.icon(
+              GradientButton(
                 onPressed: _busy ? null : _start,
-                icon: _busy
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.send_outlined),
-                label: Text(_busy ? 'Работаем…' : 'Запустить'),
+                busy: _busy,
+                label: _busy ? 'Работаем…' : 'Запустить',
+                icon: const Icon(Icons.send_outlined),
               ),
               const SizedBox(height: 8),
               OutlinedButton.icon(
