@@ -221,8 +221,23 @@ pub fn accounts_json(state: &AppState) -> serde_json::Value {
     list.sort_by(|a, b| {
         let pool_a = a["pool"].as_str().unwrap_or("");
         let pool_b = b["pool"].as_str().unwrap_or("");
-        let id_a = a["id"].as_str().unwrap_or("").parse::<i64>().unwrap_or(0);
-        let id_b = b["id"].as_str().unwrap_or("").parse::<i64>().unwrap_or(0);
+        // id теперь "{user_id}@{pool}" — берём числовую часть до '@'
+        let id_a = a["id"]
+            .as_str()
+            .unwrap_or("")
+            .split('@')
+            .next()
+            .unwrap_or("")
+            .parse::<i64>()
+            .unwrap_or(0);
+        let id_b = b["id"]
+            .as_str()
+            .unwrap_or("")
+            .split('@')
+            .next()
+            .unwrap_or("")
+            .parse::<i64>()
+            .unwrap_or(0);
         pool_a.cmp(pool_b).then(id_a.cmp(&id_b))
     });
     serde_json::Value::Array(list)

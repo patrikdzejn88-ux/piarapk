@@ -112,6 +112,12 @@ class _ParserScreenState extends State<ParserScreen> {
             .whereType<Map>()
             .map((m) => m.cast<String, dynamic>())
             .toList();
+        // выбранный чат после перезагрузки списка — заново сматчить по id
+        // (новые Map-инстанцы не совпадают по == со старым _selectedChat)
+        final selId = _selectedChat?['id'];
+        final matched =
+            _accountChats.where((c) => c['id'] == selId).toList();
+        _selectedChat = matched.isEmpty ? null : matched.first;
         _busy = false;
         if (_accountChats.isEmpty) {
           _progressLine = 'На аккаунте парсера нет чатов';
