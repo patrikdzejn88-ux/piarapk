@@ -142,6 +142,11 @@ class _AccountsScreenState extends State<AccountsScreen> {
         text: (await SettingsStorage.getApiId())?.toString() ?? '');
     final hashCtrl =
         TextEditingController(text: await SettingsStorage.getApiHash() ?? '');
+    if (!mounted) {
+      idCtrl.dispose();
+      hashCtrl.dispose();
+      return;
+    }
     await showDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -188,11 +193,11 @@ class _AccountsScreenState extends State<AccountsScreen> {
                 hashCtrl.text.trim(),
               );
               if (dialogContext.mounted) {
-                Navigator.pop(dialogContext);
-                ScaffoldMessenger.of(context).showSnackBar(
+                ScaffoldMessenger.of(dialogContext).showSnackBar(
                   const SnackBar(
                       content: Text('Сохранено. Перезапусти приложение')),
                 );
+                Navigator.pop(dialogContext);
               }
             },
             child: const Text('Сохранить'),

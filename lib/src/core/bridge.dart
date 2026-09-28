@@ -198,7 +198,7 @@ class PiarCore {
     }
     final cfg = jsonEncode({
       'data_dir': dataDir.absolute.path,
-      if (apiId != null) 'api_id': apiId,
+      'api_id': ?apiId,
       if (apiHash != null && apiHash.isNotEmpty) 'api_hash': apiHash,
     });
     final cfgPtr = cfg.toNativeUtf8().cast<ffi.Uint8>();
