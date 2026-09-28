@@ -33,7 +33,7 @@ impl EventQueue {
     /// try_lock: если очередь внезапно заблокирована (авария в другой
     /// задаче), поллер НЕ должен вечно висеть и морозить UI-поток Dart.
     pub fn drain(&self) -> String {
-        let Ok(mut q) = self.queue.try_lock() else {
+        let Some(mut q) = self.queue.try_lock() else {
             return "[]".to_string();
         };
         if q.is_empty() {
