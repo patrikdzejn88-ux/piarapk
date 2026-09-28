@@ -117,11 +117,13 @@ pub fn chats_json(state: &AppState) -> serde_json::Value {
     serde_json::Value::Array(list)
 }
 
-/// Отправить сообщение в чат (первым подключённым аккаунтом).
+/// Отправить сообщение в чат (первым подключённым аккаунтом);
+/// опционально — картинка + текст (caption).
 pub async fn post_message(
     state: &AppState,
     chat_id: i64,
     text: &str,
+    image_path: &str,
 ) -> anyhow::Result<serde_json::Value> {
     let record = find_chat(state, chat_id)
         .ok_or_else(|| anyhow::anyhow!("чат не найден: {chat_id}"))?;
@@ -129,8 +131,16 @@ pub async fn post_message(
     let Some(client) = super::connect::connected_client(state, "piar") else {
         return Err(anyhow::anyhow!("нет подключённых аккаунтов"));
     };
+    let mut message = grammers_client::message::InputMessage::new().text(text);
+    if !image_path.trim().is_empty() {
+        let uploaded = client
+            .upload_file(image_path.trim())
+            .await
+            .map_err(|e| anyhow::anyhow!("загрузка картинки: {e}"))?;
+        message = message.photo(uploaded);
+    }
     client
-        .send_message(peer_ref, text)
+        .send_message(peer_ref, message)
         .await
         .map_err(|e| anyhow::anyhow!("не отправилось: {e}"))?;
     Ok(serde_json::json!({ "sent": true }))

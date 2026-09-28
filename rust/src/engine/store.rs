@@ -193,3 +193,12 @@ pub fn sanitize_name(name: &str) -> String {
     }
     out
 }
+
+/// Удалить базу по имени. Ok(false) — не существует.
+pub fn delete_database(dbs_dir: &Path, name: &str) -> std::io::Result<bool> {
+    let path = UserDatabase::path_for(dbs_dir, &sanitize_name(name));
+    if !path.exists() {
+        return Ok(false);
+    }
+    std::fs::remove_file(path).map(|_| true)
+}

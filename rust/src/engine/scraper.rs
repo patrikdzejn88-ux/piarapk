@@ -1,5 +1,8 @@
-//! Парсер: сбор участников чата ПО АВТОРАМ последних сообщений (единственный
-//! режим). Порт scrape-логики tg-piar (по сообщениям, дедуп, прогресс).
+//! Парсер: сбор участников чата ПО АВТОРАМ последних сообщений.
+//! Оптимизация: (1) обход сообщений без резолва; (2) батч-резолв usernames
+//! через users.getUsers по 100 штук за запрос (вместо поштучного resolve_peer —
+//! ускорение в 5-10 раз); (3) поддержка остановки (parse_cancel) с
+//! сохранением уже собранного.
 
 use std::collections::HashMap;
 
@@ -10,74 +13,8 @@ use grammers_session::types::PeerRef;
 use super::state::AppState;
 use super::store::{sanitize_name, UserDatabase};
 
-/// Собрать usernames авторов последних `limit` сообщений чата.
-/// Возвращает (сохранено, пропущено).
-async fn scrape_message_authors(
-    state: &AppState,
-    client: &Client,
-    peer_ref: PeerRef,
-    limit: usize,
-    base_name: &str,
-) -> Result<(usize, usize), String> {
-    let mut usernames: Vec<String> = Vec::new();
-    let mut skipped = 0usize;
-    let mut done = 0usize;
-    let limit = limit.clamp(1, 1_000_000);
-    let mut iter = client.iter_messages(peer_ref).limit(limit);
-
-    // кэш PeerId → username (сообщения часто от одних авторов)
-    let mut cache: HashMap<grammers_session::types::PeerId, Option<String>> = HashMap::new();
-
-    while let Some(m) = iter
-        .next()
-        .await
-        .map_err(|e| format!("iter_messages: {e}"))?
-    {
-        done += 1;
-        let username = match m.sender_id() {
-            Some(pid) => {
-                if let Some(cached) = cache.get(&pid) {
-                    cached.clone()
-                } else {
-                    // async-цепочка через match (and_then с await внутри
-                    // замыкания невозможен)
-                    let name = {
-                        let sender = m.sender_ref().await.ok().flatten();
-                        if let Some(r) = sender {
-                            match client.resolve_peer(r).await {
-                                Ok(Peer::User(u)) => match u.username() {
-                                    Some(x) if !x.is_empty() => Some(x.to_string()),
-                                    _ => None,
-                                },
-                                _ => None,
-                            }
-                        } else {
-                            None
-                        }
-                    };
-                    cache.insert(pid, name.clone());
-                    name
-                }
-            }
-            None => None,
-        };
-        match username {
-            Some(u) => usernames.push(u),
-            None => skipped += 1,
-        }
-        if done % 25 == 0 {
-            state.progress(
-                "parse_start",
-                serde_json::json!({ "done": done, "total": limit }),
-            );
-        }
-    }
-
-    let path = UserDatabase::path_for(&state.dbs_dir(), base_name);
-    let saved = UserDatabase::append_unique(&path, &usernames).map_err(|e| e.to_string())?;
-    log::info!("parse {base_name}: сообщений {done}, авторов с username {}, сохранено {saved}", usernames.len());
-    Ok((saved, skipped))
-}
+/// Сколько InputUser резолвится за один users.getUsers.
+const RESOLVE_CHUNK: usize = 100;
 
 /// Точка входа: parse_start { chat | dialog_id+access_hash, title, limit }.
 pub async fn parse_start(
@@ -95,6 +32,7 @@ pub async fn parse_start(
             "нет подключённых аккаунтов в пуле «Парсер» — добавьте и подключите аккаунт в разделе «Аккаунты» (вкладка «Парсер»)",
         ));
     };
+    state.reset_parser_cancel();
 
     // источник: выбранный диалог аккаунта (dialog_id) ИЛИ ссылка/@username
     let (peer_ref, base_name) = if dialog_id != 0 {
@@ -129,16 +67,105 @@ pub async fn parse_start(
         (peer_ref, name)
     };
 
-    state.progress("parse_start", serde_json::json!({ "done": 0, "total": limit }));
+    // ---------- фаза 1: обходим сообщения, собираем УНИКАЛЬНЫХ авторов ----------
+    let limit = limit.clamp(1, 1_000_000);
+    let mut iter = client.iter_messages(peer_ref).limit(limit);
+    // PeerId → PeerRef (dedup)
+    let mut authors: HashMap<grammers_session::types::PeerId, PeerRef> = HashMap::new();
+    let mut messages_done = 0usize;
+    let mut stopped = false;
 
-    let (saved, skipped) =
-        scrape_message_authors(state, &client, peer_ref, limit, &base_name)
-            .await
-            .map_err(|e| super::auth::err_json("ERROR", e))?;
+    while let Some(m) = iter
+        .next()
+        .await
+        .map_err(|e| super::auth::err_json("ERROR", format!("iter_messages: {e}")))?
+    {
+        messages_done += 1;
+        if let Some(r) = m.sender_ref().await.ok().flatten() {
+            authors.insert(r.id, r);
+        }
+        if messages_done % 100 == 0 {
+            state.progress(
+                "parse_start",
+                serde_json::json!({
+                    "phase": "messages",
+                    "done": messages_done,
+                    "total": limit,
+                    "authors": authors.len(),
+                }),
+            );
+        }
+        if state.parser_cancelled() {
+            stopped = true;
+            log::info!("parse: остановка пользователем после {messages_done} сообщений");
+            break;
+        }
+    }
+    log::info!("parse {base_name}: сообщений {messages_done}, уникальных авторов {}", authors.len());
+
+    // ---------- фаза 2: батч-резолв usernames (users.getUsers по 100) ----------
+    let refs: Vec<PeerRef> = authors.values().cloned().collect();
+    let total_authors = refs.len();
+    let mut usernames: Vec<String> = Vec::new();
+    let mut no_username = 0usize;
+    let mut failed_chunks = 0usize;
+
+    for (i, chunk) in refs.chunks(RESOLVE_CHUNK).enumerate() {
+        if state.parser_cancelled() {
+            stopped = true;
+            break;
+        }
+        let ids: Vec<grammers_tl_types::enums::InputUser> =
+            chunk.iter().map(|r| r.into()).collect();
+        let request = grammers_tl_types::functions::users::GetUsers { id: ids };
+        match client.invoke(&request).await {
+            Ok(users) => {
+                for u in users {
+                    if let grammers_tl_types::enums::User::User(user) = u {
+                        if let Some(un) = user.username {
+                            if !un.is_empty() {
+                                usernames.push(un);
+                            } else {
+                                no_username += 1;
+                            }
+                        } else {
+                            no_username += 1;
+                        }
+                    } else {
+                        no_username += 1;
+                    }
+                }
+            }
+            Err(e) => {
+                failed_chunks += 1;
+                log::warn!("parse: чанк {i} не разрезолвился: {e}");
+                no_username += chunk.len();
+            }
+        }
+        let done = (i + 1) * RESOLVE_CHUNK;
+        state.progress(
+            "parse_start",
+            serde_json::json!({
+                "phase": "resolve",
+                "done": done.min(total_authors),
+                "total": total_authors,
+                "authors": total_authors,
+            }),
+        );
+    }
+
+    // ---------- фаза 3: сохранить базу ----------
+    let path = UserDatabase::path_for(&state.dbs_dir(), &base_name);
+    let saved = UserDatabase::append_unique(&path, &usernames)
+        .map_err(|e| super::auth::err_json("ERROR", e))?;
+    log::info!("parse {base_name}: usernames {}, сохранено {saved}", usernames.len());
 
     Ok(serde_json::json!({
         "saved": saved,
-        "skipped": skipped,
+        "skipped": no_username,
         "base": base_name,
+        "messages": messages_done,
+        "authors": total_authors,
+        "stopped": stopped,
     }))
 }

@@ -21,6 +21,7 @@ pub async fn invite_start(
     chat_id: i64,
     database: &str,
     message: &str,
+    image_path: &str,
     count: usize,
 ) -> Result<serde_json::Value, serde_json::Value> {
     // целевой чат
@@ -168,9 +169,11 @@ pub async fn invite_start(
         "failed": failed,
         "remaining": all.len(),
     });
-    // сообщение в чат после инвайтов (только если не остановились)
-    if !message.trim().is_empty() && stopped_reason.is_none() {
-        match super::chats::post_message(state, chat_id, message).await {
+    // сообщение (текст + опционально картинка) в чат после инвайтов
+    if (!message.trim().is_empty() || !image_path.trim().is_empty())
+        && stopped_reason.is_none()
+    {
+        match super::chats::post_message(state, chat_id, message, image_path).await {
             Ok(_) => report["message_sent"] = serde_json::json!(true),
             Err(e) => report["message_error"] = serde_json::json!(e.to_string()),
         }

@@ -60,7 +60,9 @@ class _ParserScreenState extends State<ParserScreen> {
     if (e.method != 'parse_start') return;
     if (e.type == 'progress' && mounted) {
       final d = e.data;
-      setState(() => _progressLine = 'Обработано сообщений: ${d?['done'] ?? 0}');
+      final phase = d?['phase'] == 'resolve' ? 'резолв usernames' : 'сообщений';
+      setState(() => _progressLine =
+          'Фаза: $phase — ${d?['done'] ?? 0}/${d?['total'] ?? 0} · авторов: ${d?['authors'] ?? 0}');
     }
     if (e.type == 'result' && mounted) {
       setState(() {
@@ -154,6 +156,116 @@ class _ParserScreenState extends State<ParserScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
   }
 
+  /// Просмотр базы (только чтение).
+  Future<void> _viewBase(Map<String, dynamic> db) async {
+    final name = db['name']?.toString() ?? '';
+    final res = PiarCore.instance.call('get_database', {'name': name});
+    if (!res.ok) {
+      _snack('Ошибка чтения: ${res.errorText}');
+      return;
+    }
+    final content =
+        res.data is Map ? (res.data as Map)['content']?.toString() ?? '' : '';
+    final lines = content.split('\n').where((l) => l.trim().isNotEmpty).toList();
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('База «$name» · ${lines.length} чел.'),
+        content: SizedBox(
+          width: 440,
+          height: 460,
+          child: lines.isEmpty
+              ? const Center(child: Text('Пусто'))
+              : ListView.builder(
+                  itemCount: lines.length,
+                  itemBuilder: (context, i) => Text(
+                    '@${lines[i]}',
+                    style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                  ),
+                ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Закрыть'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Добавить людей в базу вручную.
+  Future<void> _addPeople(Map<String, dynamic> db) async {
+    final name = db['name']?.toString() ?? '';
+    final ctrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Добавить в «$name»'),
+        content: SizedBox(
+          width: 440,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('По одному username в строке (можно с @ или без):',
+                  style: TextStyle(fontSize: 12)),
+              const SizedBox(height: 8),
+              TextField(
+                controller: ctrl,
+                maxLines: 6,
+                decoration: const InputDecoration(
+                    hintText: 'user1\nuser2\n@user3',
+                    border: OutlineInputBorder()),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Отмена')),
+          FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Добавить')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final res = await PiarCore.instance
+        .callAsync('add_to_database', {'name': name, 'usernames': ctrl.text});
+    ctrl.dispose();
+    _snack(res.ok
+        ? 'Добавлено: ${res.data is Map ? (res.data as Map)['added'] : 0} новых'
+        : 'Ошибка: ${res.errorText}');
+    _reloadDatabases();
+  }
+
+  /// Удаление базы с подтверждением.
+  Future<void> _deleteBase(Map<String, dynamic> db) async {
+    final name = db['name']?.toString() ?? '';
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Удалить базу «$name»?'),
+        content: const Text('Файл базы будет удалён с устройства безвозвратно.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Отмена')),
+          FilledButton(
+              style: FilledButton.styleFrom(
+                  backgroundColor: Colors.redAccent),
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Удалить')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final res = await PiarCore.instance.callAsync('delete_database', {'name': name});
+    _snack(res.ok ? 'База «$name» удалена' : 'Ошибка: ${res.errorText}');
+    _reloadDatabases();
+  }
+
   @override
   Widget build(BuildContext context) {
     if (!PiarCore.instance.available) {
@@ -243,16 +355,33 @@ class _ParserScreenState extends State<ParserScreen> {
                 ),
               ),
               const SizedBox(height: 16),
-              FilledButton.icon(
-                onPressed: _busy ? null : _start,
-                icon: _busy
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.play_arrow_outlined),
-                label: Text(_busy ? 'Собираем…' : 'Собрать'),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: _busy ? null : _start,
+                      icon: _busy
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.play_arrow_outlined),
+                      label: Text(_busy ? 'Собираем…' : 'Собрать'),
+                    ),
+                  ),
+                  if (_busy) ...[
+                    const SizedBox(width: 8),
+                    OutlinedButton.icon(
+                      onPressed: () {
+                        PiarCore.instance.callAsync('parse_cancel', {});
+                        _snack('Останавливаю… (собранное сохранится)');
+                      },
+                      icon: const Icon(Icons.stop_circle_outlined),
+                      label: const Text('Стоп'),
+                    ),
+                  ],
+                ],
               ),
               if (_progressLine != null) ...[
                 const SizedBox(height: 12),
@@ -301,10 +430,30 @@ class _ParserScreenState extends State<ParserScreen> {
                     leading: const Icon(Icons.storage_outlined),
                     title: Text('${d['name']}'),
                     subtitle: Text('${d['entries'] ?? 0} записей'),
-                    trailing: IconButton(
-                      tooltip: 'Скачать на устройство',
-                      icon: const Icon(Icons.download_outlined),
-                      onPressed: () => _downloadBase(d),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: 'Просмотр',
+                          icon: const Icon(Icons.visibility_outlined),
+                          onPressed: () => _viewBase(d),
+                        ),
+                        IconButton(
+                          tooltip: 'Добавить людей вручную',
+                          icon: const Icon(Icons.person_add_alt_outlined),
+                          onPressed: () => _addPeople(d),
+                        ),
+                        IconButton(
+                          tooltip: 'Скачать на устройство',
+                          icon: const Icon(Icons.download_outlined),
+                          onPressed: () => _downloadBase(d),
+                        ),
+                        IconButton(
+                          tooltip: 'Удалить базу',
+                          icon: const Icon(Icons.delete_outline),
+                          onPressed: () => _deleteBase(d),
+                        ),
+                      ],
                     ),
                   ),
                 ),

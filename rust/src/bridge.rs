@@ -112,7 +112,7 @@ pub extern "C" fn piar_init(config_json: *const c_char) -> c_int {
         accounts: Default::default(),
         pending_auths: Default::default(),
         next_request_id: Default::default(),
-        started_at: std::time::Instant::now(),
+        parser_cancel: std::sync::atomic::AtomicBool::new(false),
     };
     connect::load_entries(&app);
 
@@ -306,7 +306,8 @@ async fn dispatch_async(
         "post_message" => {
             let chat_id = params.get("chat_id").and_then(|v| v.as_i64()).unwrap_or_default();
             let text = str_param(params, "text", "");
-            map_anyhow(chats::post_message(app, chat_id, &text).await)
+            let image_path = str_param(params, "image_path", "");
+            map_anyhow(chats::post_message(app, chat_id, &text, &image_path).await)
         }
         "create_channel" => {
             let title = str_param(params, "title", "Новый канал");
@@ -332,9 +333,41 @@ async fn dispatch_async(
             let chat_id = params.get("chat_id").and_then(|v| v.as_i64()).unwrap_or_default();
             let database = str_param(params, "database", "");
             let message = str_param(params, "message", "");
+            let image_path = str_param(params, "image_path", "");
             let count = params.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             log::info!("invite_start: чат {chat_id}, база {database}, людей {count}");
-            inviter::invite_start(app, chat_id, &database, &message, count).await
+            inviter::invite_start(app, chat_id, &database, &message, &image_path, count).await
+        }
+        // ---- управление парсингом/базами ----
+        "parse_cancel" => {
+            app.request_parser_cancel();
+            log::info!("parse_cancel: запрошена остановка парсинга");
+            Ok(serde_json::json!({"cancel_requested": true}))
+        }
+        "delete_database" => {
+            let name = str_param(params, "name", "");
+            match store::delete_database(&app.dbs_dir(), &name) {
+                Ok(true) => Ok(serde_json::json!({"deleted": true})),
+                Ok(false) => Err(auth::err_json("DB_NOT_FOUND", format!("база «{name}» не найдена"))),
+                Err(e) => Err(auth::err_json("ERROR", e.to_string())),
+            }
+        }
+        "add_to_database" => {
+            let name = str_param(params, "name", "");
+            let raw = str_param(params, "usernames", "");
+            let usernames: Vec<String> = raw
+                .split(|c: char| c == '\n' || c == ',' || c == ' ')
+                .map(|s| s.trim().trim_start_matches('@').to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if usernames.is_empty() {
+                return Err(auth::err_json("EMPTY", "список usernames пуст"));
+            }
+            let path = store::UserDatabase::path_for(&app.dbs_dir(), &store::sanitize_name(&name));
+            match store::UserDatabase::append_unique(&path, &usernames) {
+                Ok(added) => Ok(serde_json::json!({"added": added})),
+                Err(e) => Err(auth::err_json("ERROR", e.to_string())),
+            }
         }
         other => Err(auth::err_json(
             "UNKNOWN_METHOD",

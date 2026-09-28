@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
 import '../../core/bridge.dart';
+import '../../core/native.dart';
 
 /// Раздел «Пиар»: ОДИН аккаунт (владелец чата) добавляет людей из базы
 /// в чат и отправляет сообщение. Чат — read-only для участников.
@@ -18,6 +20,8 @@ class _PiarScreenState extends State<PiarScreen> {
   String? _database;
   final _messageCtrl = TextEditingController();
   final _countCtrl = TextEditingController(text: '0');
+  String? _imagePath;
+  String? _imageName;
 
   bool _busy = false;
   String? _progressLine;
@@ -99,6 +103,7 @@ class _PiarScreenState extends State<PiarScreen> {
       'chat_id': _chat!['id'],
       'database': _database,
       'message': _messageCtrl.text.trim(),
+      'image_path': _imagePath ?? '',
       'count': int.tryParse(_countCtrl.text.trim()) ?? 0,
     });
     if (!res.ok && mounted) {
@@ -117,8 +122,22 @@ class _PiarScreenState extends State<PiarScreen> {
     final res = await PiarCore.instance.callAsync('post_message', {
       'chat_id': _chat!['id'],
       'text': _messageCtrl.text.trim(),
+      'image_path': _imagePath ?? '',
     });
     _snack(res.ok ? 'Сообщение отправлено' : 'Ошибка: ${res.errorText}');
+  }
+
+  Future<void> _pickImage() async {
+    final path = await Native.pickImage();
+    if (!mounted) return;
+    if (path == null) {
+      _snack('Картинка не выбрана');
+      return;
+    }
+    setState(() {
+      _imagePath = path;
+      _imageName = path.split(Platform.pathSeparator).last;
+    });
   }
 
   Future<void> _addChat() async {
@@ -216,8 +235,30 @@ class _PiarScreenState extends State<PiarScreen> {
                 controller: _messageCtrl,
                 maxLines: 3,
                 decoration: const InputDecoration(
-                    labelText: 'Сообщение в чат (после добавления людей)',
+                    labelText: 'Сообщение (текст к картинке / обычное сообщение)',
                     border: OutlineInputBorder()),
+              ),
+              const SizedBox(height: 8),
+              // картинка к сообщению (фото + подпись)
+              Row(
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: _pickImage,
+                    icon: const Icon(Icons.image_outlined),
+                    label: Text(_imagePath == null
+                        ? 'Картинка'
+                        : _imageName ?? 'выбрана'),
+                  ),
+                  if (_imagePath != null) ...[
+                    const SizedBox(width: 8),
+                    IconButton(
+                      tooltip: 'Убрать картинку',
+                      icon: const Icon(Icons.close),
+                      onPressed: () =>
+                          setState(() { _imagePath = null; _imageName = null; }),
+                    ),
+                  ],
+                ],
               ),
               const SizedBox(height: 16),
               FilledButton.icon(

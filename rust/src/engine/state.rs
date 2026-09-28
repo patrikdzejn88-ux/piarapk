@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use grammers_client::client::{Client, LoginToken, PasswordToken};
@@ -81,9 +81,23 @@ pub struct AppState {
     pub next_request_id: AtomicU64,
     pub chats: Mutex<ChatsFile>,
     pub started_at: std::time::Instant,
+    /// Запрос на остановку текущего парсинга (parse_cancel).
+    pub parser_cancel: AtomicBool,
 }
 
 impl AppState {
+    pub fn request_parser_cancel(&self) {
+        self.parser_cancel.store(true, Ordering::SeqCst);
+    }
+
+    pub fn parser_cancelled(&self) -> bool {
+        self.parser_cancel.load(Ordering::SeqCst)
+    }
+
+    pub fn reset_parser_cancel(&self) {
+        self.parser_cancel.store(false, Ordering::SeqCst);
+    }
+
     pub fn sessions_dir(&self) -> PathBuf {
         self.data_dir.join("sessions")
     }

@@ -1,12 +1,14 @@
 package com.piarkapk.piarapk
 
 import android.content.ContentValues
+import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import androidx.activity.result.contract.ActivityResultContracts
 import java.io.File
 
 class MainActivity : FlutterActivity() {
@@ -28,6 +30,39 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    /** Ожидаемый результат системного выбора картинки (одиночный). */
+    private var pendingPickResult: MethodChannel.Result? = null
+
+    private val pickImageLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+            val result = pendingPickResult
+            pendingPickResult = null
+            if (result == null) return@registerForActivityResult
+            if (uri == null) {
+                result.success(null)
+                return@registerForActivityResult
+            }
+            try {
+                // копируем выбранную картинку в файлы приложения (稳定的 путь для Rust)
+                val ext = when (contentResolver.getType(uri)) {
+                    "image/png" -> "png"
+                    "image/webp" -> "webp"
+                    else -> "jpg"
+                }
+                val out = File(filesDir, "picked_image.$ext")
+                contentResolver.openInputStream(uri)?.use { input ->
+                    out.outputStream().use { output -> input.copyTo(output) }
+                } ?: run {
+                    result.success(null)
+                    return@registerForActivityResult
+                }
+                result.success(out.absolutePath)
+            } catch (e: Exception) {
+                Log.e("piarapk", "pickImage copy failed", e)
+                result.success(null)
+            }
+        }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         // Канал системных путей — вместо нативного плагина path_provider.
@@ -39,6 +74,14 @@ class MainActivity : FlutterActivity() {
                 "getFilesDir" -> result.success(filesDir.absolutePath)
                 "getNativeLibraryDir" -> result.success(applicationInfo.nativeLibraryDir)
                 "getCoreLibStatus" -> result.success(coreLibError ?: "ok")
+                "pickImage" -> {
+                    if (pendingPickResult != null) {
+                        result.error("PICK_BUSY", "выбор уже идёт", null)
+                    } else {
+                        pendingPickResult = result
+                        pickImageLauncher.launch(arrayOf("image/*"))
+                    }
+                }
                 "exportToDownloads" -> handleExport(call, result)
                 else -> result.notImplemented()
             }
