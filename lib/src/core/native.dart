@@ -14,6 +14,15 @@ class Native {
     }
   }
 
+  /// Открыть встроенный браузер (магазин dark.shopping).
+  static Future<bool> openShop(String url) async {
+    try {
+      return await _ch.invokeMethod('openShop', {'url': url}) == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Запустить foreground-сервис (парсер живёт при сворачивании приложения).
   static Future<bool> parserServiceStart(String text) async {
     try {

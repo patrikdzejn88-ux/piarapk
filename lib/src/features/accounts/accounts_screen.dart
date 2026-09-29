@@ -357,6 +357,14 @@ class _AccountCard extends StatelessWidget {
                 if (account.connected)
                   const PopupMenuItem(
                       value: 'disconnect', child: Text('Отключить')),
+                if (account.pool == 'piar')
+                  const PopupMenuItem(
+                      value: 'move_to_parser',
+                      child: Text('Перенести в «Парсер»')),
+                if (account.pool == 'parser')
+                  const PopupMenuItem(
+                      value: 'move_to_piar',
+                      child: Text('Перенести в «Пиар»')),
                 const PopupMenuItem(
                   value: 'delete',
                   child:
@@ -376,6 +384,10 @@ class _AccountCard extends StatelessWidget {
         await controller.connect(account.id);
       case 'disconnect':
         await controller.disconnect(account.id);
+      case 'move_to_parser':
+        await controller.moveToPool(account.id, 'parser');
+      case 'move_to_piar':
+        await controller.moveToPool(account.id, 'piar');
       case 'delete':
         final ok = await showDialog<bool>(
           context: context,

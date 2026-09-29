@@ -194,6 +194,14 @@ pub extern "C" fn piar_call(
                 Err(e) => serde_json::json!({ "ok": false, "error": { "code": "DB_READ", "message": e.to_string() } }),
             }
         }
+        "create_database" => {
+            let name = str_param(&params, "name", "");
+            let usernames = parse_usernames(&str_param(&params, "usernames", ""));
+            match store::create_database(&app.dbs_dir(), &name, &usernames) {
+                Ok(n) => serde_json::json!({ "ok": true, "data": { "created": n } }),
+                Err(e) => serde_json::json!({ "ok": false, "error": { "code": "DB_CREATE", "message": e.to_string() } }),
+            }
+        }
         other => serde_json::json!({
             "ok": false,
             "error": { "code": "UNKNOWN_METHOD", "message": format!("неизвестный sync-метод: {other}") },
@@ -325,9 +333,22 @@ async fn dispatch_async(
             log::info!("parse_start: чат {chat}, диалог {dialog_id}, лимит {limit}");
             scraper::parse_start(app, &chat, dialog_id, access_hash, &title, limit).await
         }
-        // ---- чаты аккаунта парсера (его диалоги) ----
+        // ---- чаты аккаунта (диалоги) ----
         "list_account_chats" => {
-            chats::list_account_chats(app).await
+            let pool = str_param(params, "pool", "parser");
+            chats::list_account_chats(app, &pool).await
+        }
+        "add_chat_from_dialog" => {
+            let dialog_id = params.get("dialog_id").and_then(|v| v.as_i64()).unwrap_or_default();
+            let access_hash = params.get("access_hash").and_then(|v| v.as_i64()).unwrap_or_default();
+            let title = str_param(params, "title", "");
+            map_anyhow(chats::add_chat_from_dialog(app, dialog_id, access_hash, &title).await)
+        }
+        // ---- перенос аккаунта между пулами ----
+        "move_account" => {
+            let id = str_param(params, "id", "");
+            let to_pool = str_param(params, "to_pool", "");
+            map_anyhow(connect::move_account(app, &id, &to_pool))
         }
         // ---- пиар (один аккаунт, N людей из базы) ----
         "invite_start" => {
@@ -355,12 +376,7 @@ async fn dispatch_async(
         }
         "add_to_database" => {
             let name = str_param(params, "name", "");
-            let raw = str_param(params, "usernames", "");
-            let usernames: Vec<String> = raw
-                .split(|c: char| c == '\n' || c == ',' || c == ' ')
-                .map(|s| s.trim().trim_start_matches('@').to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
+            let usernames = parse_usernames(&str_param(params, "usernames", ""));
             if usernames.is_empty() {
                 Err(auth::err_json("EMPTY", "список usernames пуст"))
             } else {
@@ -370,6 +386,14 @@ async fn dispatch_async(
                     Ok(added) => Ok(serde_json::json!({"added": added})),
                     Err(e) => Err(auth::err_json("ERROR", e.to_string())),
                 }
+            }
+        }
+        "remove_from_database" => {
+            let name = str_param(params, "name", "");
+            let usernames = parse_usernames(&str_param(params, "usernames", ""));
+            match store::remove_from_database(&app.dbs_dir(), &name, &usernames) {
+                Ok(removed) => Ok(serde_json::json!({"removed": removed})),
+                Err(e) => Err(auth::err_json("ERROR", e.to_string())),
             }
         }
         other => Err(auth::err_json(
@@ -389,6 +413,14 @@ fn str_param(params: &serde_json::Value, key: &str, default: &str) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or(default)
         .to_string()
+}
+
+/// Разобрать список usernames из строки (переносы строк / запятые / пробелы).
+fn parse_usernames(raw: &str) -> Vec<String> {
+    raw.split(|c: char| c == '\n' || c == ',' || c == ' ')
+        .map(|s| s.trim().trim_start_matches('@').to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 fn map_anyhow(

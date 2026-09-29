@@ -307,7 +307,7 @@ class _PiarScreenState extends State<PiarScreen> {
   }
 }
 
-/// Диалог добавления чата: существующий (@ссылка) или создание read-only канала.
+/// Диалог добавления чата: с аккаунта / существующий (@ссылка) / создать канал.
 class _AddChatDialog extends StatefulWidget {
   const _AddChatDialog();
 
@@ -315,14 +315,26 @@ class _AddChatDialog extends StatefulWidget {
   State<_AddChatDialog> createState() => _AddChatDialogState();
 }
 
+enum _ChatMode { account, link, create }
+
 class _AddChatDialogState extends State<_AddChatDialog> {
-  bool _create = false;
+  _ChatMode _mode = _ChatMode.account;
   bool _busy = false;
   String? _error;
+
+  bool _chatsLoading = false;
+  List<Map<String, dynamic>> _accountChats = [];
+  Map<String, dynamic>? _selected;
 
   final _linkCtrl = TextEditingController();
   final _titleCtrl = TextEditingController();
   final _aboutCtrl = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAccountChats();
+  }
 
   @override
   void dispose() {
@@ -332,19 +344,60 @@ class _AddChatDialogState extends State<_AddChatDialog> {
     super.dispose();
   }
 
+  Future<void> _loadAccountChats() async {
+    setState(() => _chatsLoading = true);
+    final res = await PiarCore.instance
+        .callAsync('list_account_chats', {'pool': 'piar'});
+    if (!mounted) return;
+    if (res.ok && res.data is List) {
+      setState(() {
+        _accountChats = (res.data as List)
+            .whereType<Map>()
+            .map((m) => m.cast<String, dynamic>())
+            .toList();
+        _chatsLoading = false;
+        // перевыбор по id после перезагрузки
+        final selId = _selected?['id'];
+        final matched =
+            _accountChats.where((c) => c['id'] == selId).toList();
+        _selected = matched.isEmpty ? null : matched.first;
+      });
+    } else {
+      setState(() {
+        _chatsLoading = false;
+        _error = res.errorText;
+      });
+    }
+  }
+
   Future<void> _submit() async {
     setState(() {
       _busy = true;
       _error = null;
     });
-    final res = _create
-        ? await PiarCore.instance.callAsync('create_channel', {
-            'title': _titleCtrl.text.trim(),
-            'about': _aboutCtrl.text.trim(),
-          })
-        : await PiarCore.instance
-            .callAsync('add_chat', {'link': _linkCtrl.text.trim()});
+    final res = switch (_mode) {
+      _ChatMode.account => _selected != null
+          ? await PiarCore.instance.callAsync('add_chat_from_dialog', {
+              'dialog_id': _selected!['id'],
+              'access_hash': _selected!['access_hash'],
+              'title': _selected!['title'] ?? '',
+            })
+          : null,
+      _ChatMode.create => await PiarCore.instance.callAsync('create_channel', {
+          'title': _titleCtrl.text.trim(),
+          'about': _aboutCtrl.text.trim(),
+        }),
+      _ChatMode.link => await PiarCore.instance
+          .callAsync('add_chat', {'link': _linkCtrl.text.trim()}),
+    };
     if (!mounted) return;
+    if (res == null) {
+      setState(() {
+        _busy = false;
+        _error = 'Выберите чат из списка';
+      });
+      return;
+    }
     if (res.ok) {
       Navigator.pop(context, true);
     } else {
@@ -360,60 +413,97 @@ class _AddChatDialogState extends State<_AddChatDialog> {
     return AlertDialog(
       title: const Text('Чат для инвайтов'),
       content: SizedBox(
-        width: 440,
+        width: 460,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            SegmentedButton<bool>(
+            SegmentedButton<_ChatMode>(
               segments: const [
                 ButtonSegment(
-                  value: false,
-                  icon: Icon(Icons.link),
-                  label: Text('Существующий'),
+                  value: _ChatMode.account,
+                  icon: Icon(Icons.chat_bubble_outline),
+                  label: Text('С аккаунта'),
                 ),
                 ButtonSegment(
-                  value: true,
+                  value: _ChatMode.link,
+                  icon: Icon(Icons.link),
+                  label: Text('По ссылке'),
+                ),
+                ButtonSegment(
+                  value: _ChatMode.create,
                   icon: Icon(Icons.add_circle_outline),
-                  label: Text('Создать канал'),
+                  label: Text('Создать'),
                 ),
               ],
-              selected: {_create},
-              onSelectionChanged: (s) => setState(() => _create = s.first),
+              selected: {_mode},
+              onSelectionChanged: (s) => setState(() => _mode = s.first),
             ),
             const SizedBox(height: 12),
-            if (_create)
-              Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    controller: _titleCtrl,
-                    autofocus: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Название канала (read-only для подписчиков)',
-                      border: OutlineInputBorder(),
+            switch (_mode) {
+              _ChatMode.account => _chatsLoading
+                  ? const Center(child: Padding(
+                      padding: EdgeInsets.all(12),
+                      child: CircularProgressIndicator()))
+                  : _accountChats.isEmpty
+                      ? const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 8),
+                          child: Text(
+                            'На аккаунте «Пиар» нет чатов — добавь по ссылке или создай канал',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 12),
+                          ),
+                        )
+                      : DropdownButtonFormField<Map<String, dynamic>>(
+                          initialValue: _selected,
+                          isExpanded: true,
+                          decoration: const InputDecoration(
+                              hintText: 'выбрать чат аккаунта',
+                              border: OutlineInputBorder()),
+                          items: [
+                            for (final c in _accountChats)
+                              DropdownMenuItem(
+                                value: c,
+                                child: Text(
+                                  '${c['title'] ?? ''}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                          ],
+                          onChanged: (v) => setState(() => _selected = v),
+                        ),
+              _ChatMode.create => Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: _titleCtrl,
+                      autofocus: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Название канала (read-only для подписчиков)',
+                        border: OutlineInputBorder(),
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: _aboutCtrl,
-                    decoration: const InputDecoration(
-                      labelText: 'Описание',
-                      border: OutlineInputBorder(),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _aboutCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Описание',
+                        border: OutlineInputBorder(),
+                      ),
                     ),
-                  ),
-                ],
-              )
-            else
-              TextField(
-                controller: _linkCtrl,
-                autofocus: true,
-                decoration: const InputDecoration(
-                  labelText: 'Ссылка на чат/канал',
-                  hintText: '@mychannel или https://t.me/mychannel',
-                  border: OutlineInputBorder(),
+                  ],
                 ),
-              ),
+              _ChatMode.link => TextField(
+                  controller: _linkCtrl,
+                  autofocus: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Ссылка на чат/канал',
+                    hintText: '@mychannel или https://t.me/mychannel',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+            },
             if (_error != null) ...[
               const SizedBox(height: 8),
               Text(_error!, style: const TextStyle(color: Colors.redAccent)),

@@ -202,3 +202,51 @@ pub fn delete_database(dbs_dir: &Path, name: &str) -> std::io::Result<bool> {
     }
     std::fs::remove_file(path).map(|_| true)
 }
+
+/// Создать базу с начальным списком usernames (без дубликатов).
+/// Возвращает количество записанных. Существующая — дополняется.
+pub fn create_database(dbs_dir: &Path, name: &str, usernames: &[String]) -> std::io::Result<usize> {
+    let path = UserDatabase::path_for(dbs_dir, &sanitize_name(name));
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    UserDatabase::append_unique(&path, usernames)
+}
+
+/// Убрать перечисленных людей из базы. Возвращает сколько реально убрано.
+pub fn remove_from_database(
+    dbs_dir: &Path,
+    name: &str,
+    usernames: &[String],
+) -> std::io::Result<usize> {
+    let path = UserDatabase::path_for(dbs_dir, &sanitize_name(name));
+    if !path.exists() {
+        return Ok(0);
+    }
+    let remove: HashSet<String> = usernames
+        .iter()
+        .map(|u| u.trim().trim_start_matches('@').to_lowercase())
+        .filter(|u| !u.is_empty())
+        .collect();
+    let current = UserDatabase::read(&path);
+    let mut kept: Vec<String> = Vec::new();
+    let mut removed = 0usize;
+    for u in &current {
+        if remove.contains(u) {
+            removed += 1;
+        } else {
+            kept.push(u.clone());
+        }
+    }
+    if removed > 0 {
+        let tmp = path.with_extension("txt.tmp");
+        std::fs::write(&tmp, format!("{}\n", kept.join("\n")))?;
+        std::fs::rename(&tmp, &path)?;
+    }
+    Ok(removed)
+}
+
+/// Удалить одного человека из базы (обёртка над remove_from_database).
+pub fn remove_one(dbs_dir: &Path, name: &str, username: &str) -> std::io::Result<usize> {
+    remove_from_database(dbs_dir, name, std::slice::from_ref(&username.to_string()))
+}

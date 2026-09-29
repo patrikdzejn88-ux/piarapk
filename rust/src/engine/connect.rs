@@ -154,6 +154,53 @@ pub fn save_accounts_state(state: &AppState) {
     let _ = store::save_accounts(&state.data_dir, &file);
 }
 
+/// Перенести аккаунт в другой пул («piar» ↔ «parser»).
+/// Файл сессии не трогается, подключение сохраняется.
+pub fn move_account(
+    state: &AppState,
+    id: &str,
+    to_pool: &str,
+) -> anyhow::Result<serde_json::Value> {
+    if to_pool != "piar" && to_pool != "parser" {
+        return Err(anyhow::anyhow!("неизвестный пул: {to_pool}"));
+    }
+    let (mut record, live) = {
+        let mut accounts = state.accounts.write();
+        let Some(entry) = accounts.get_mut(id) else {
+            return Err(anyhow::anyhow!("аккаунт не найден: {id}"));
+        };
+        (entry.record.clone(), entry.live.take())
+    };
+    if record.pool == to_pool {
+        // вернуть live обратно
+        let mut accounts = state.accounts.write();
+        if let Some(e) = accounts.get_mut(id) {
+            e.live = live;
+        }
+        return Ok(serde_json::json!({"moved": false, "reason": "уже в этом пуле"}));
+    }
+    let old_id = record.id.clone();
+    let uid = record.id.split('@').next().unwrap_or(&record.id).to_string();
+    record.pool = to_pool.to_string();
+    record.id = format!("{uid}@{to_pool}");
+    let new_id = record.id.clone();
+    {
+        let mut accounts = state.accounts.write();
+        // если в целевом пуле уже есть запись этого же аккаунта —
+        // погасить её live-клиент, иначе утечка соединения
+        if let Some(old) = accounts.get_mut(&new_id) {
+            if let Some(l) = old.live.take() {
+                l._handle.quit();
+            }
+        }
+        accounts.remove(&old_id);
+        accounts.insert(new_id.clone(), AccountEntry { record, live });
+    }
+    save_accounts_state(state);
+    log::info!("move_account: {old_id} → {new_id}");
+    Ok(serde_json::json!({"moved": true, "id": new_id}))
+}
+
 /// Первый подключённый аккаунт: сначала prefer-пул, затем любой
 /// (для чатов/постинга — предпочитаем пиар-аккаунты).
 /// try_read: UI-поток не должен блокироваться даже при битой блокировке.

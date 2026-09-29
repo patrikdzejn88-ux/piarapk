@@ -122,6 +122,19 @@ class MainActivity : FlutterFragmentActivity() {
                         result.error("FGS_FAIL", e.message, null)
                     }
                 }
+                "openShop" -> {
+                    try {
+                        val url = call.argument<String>("url") ?: "https://dark.shopping/"
+                        startActivity(
+                            Intent(this, WebViewActivity::class.java)
+                                .putExtra(WebViewActivity.EXTRA_URL, url)
+                        )
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e("piarapk", "openShop failed", e)
+                        result.error("OPEN_FAIL", e.message, null)
+                    }
+                }
                 "exportToDownloads" -> handleExport(call, result)
                 else -> result.notImplemented()
             }

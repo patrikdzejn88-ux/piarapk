@@ -18,7 +18,7 @@ void main() {
     expect(find.text('Добавить аккаунт'), findsOneWidget);
   });
 
-  testWidgets('Навигация: магазин открывается и запрашивает API-ключ',
+  testWidgets('Навигация: магазин открывает экран запуска браузера',
       (tester) async {
     await tester.pumpWidget(const PiarApp());
 
@@ -26,8 +26,9 @@ void main() {
     await tester.tap(find.text('Магазин'));
     await tester.pumpAndSettle();
 
-    // Ключа нет → открывается диалог ввода API-ключа dark.shopping
-    expect(find.text('API-ключ dark.shopping'), findsWidgets);
+    // магазин теперь — встроенный браузер dark.shopping
+    expect(find.text('Магазин расходников'), findsOneWidget);
+    expect(find.text('Открыть магазин'), findsOneWidget);
   });
 
   testWidgets('Кнопка «Добавить аккаунт» открывает диалог добавления',

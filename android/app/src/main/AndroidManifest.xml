@@ -41,6 +41,11 @@
             android:name=".ParserService"
             android:exported="false"
             android:foregroundServiceType="dataSync"/>
+        <!-- Встроенный браузер магазина dark.shopping -->
+        <activity
+            android:name=".WebViewActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden"/>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

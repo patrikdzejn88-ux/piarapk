@@ -80,6 +80,10 @@ class AccountsController extends ChangeNotifier {
   Future<PiarResult> delete(String id) =>
       PiarCore.instance.callAsync('delete_account', {'id': id});
 
+  /// Перенос аккаунта в другой пул («piar» ↔ «parser»).
+  Future<PiarResult> moveToPool(String id, String pool) => PiarCore.instance
+      .callAsync('move_account', {'id': id, 'to_pool': pool});
+
   void _onEvent(PiarEvent event) {
     // после любого результата по аккаунтным методам — обновить список
     const methods = {
@@ -91,6 +95,7 @@ class AccountsController extends ChangeNotifier {
       'connect_account',
       'disconnect_account',
       'delete_account',
+      'move_account',
     };
     if (event.type == 'result' && methods.contains(event.method)) {
       reload();

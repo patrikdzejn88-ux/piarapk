@@ -207,12 +207,15 @@ pub async fn create_readonly_channel(
     }))
 }
 
-/// Чаты, которые уже есть на аккаунте парсера (его диалоги).
-pub async fn list_account_chats(state: &AppState) -> Result<serde_json::Value, serde_json::Value> {
-    let Some(client) = super::connect::connected_client_strict(state, "parser") else {
+/// Чаты, которые уже есть на аккаунте указанного пула (его диалоги).
+pub async fn list_account_chats(
+    state: &AppState,
+    pool: &str,
+) -> Result<serde_json::Value, serde_json::Value> {
+    let Some(client) = super::connect::connected_client_strict(state, pool) else {
         return Err(super::auth::err_json(
-            "NO_PARSER_ACCOUNTS",
-            "нет подключённых аккаунтов в пуле «Парсер» — добавьте и подключите аккаунт",
+            "NO_ACCOUNTS",
+            format!("нет подключённых аккаунтов в пуле «{pool}»"),
         ));
     };
     let mut out: Vec<serde_json::Value> = Vec::new();
@@ -239,8 +242,35 @@ pub async fn list_account_chats(state: &AppState) -> Result<serde_json::Value, s
             break;
         }
     }
-    log::info!("list_account_chats: диалогов {n}");
+    log::info!("list_account_chats ({pool}): диалогов {n}");
     Ok(serde_json::Value::Array(out))
+}
+
+/// Добавить чат в реестр напрямую из диалога аккаунта (без ссылки).
+pub async fn add_chat_from_dialog(
+    state: &AppState,
+    dialog_id: i64,
+    access_hash: i64,
+    title: &str,
+) -> anyhow::Result<serde_json::Value> {
+    let record = ChatRecord {
+        dialog_id,
+        access_hash,
+        title: title.to_string(),
+        members: 0,
+        added_at: now_secs(),
+    };
+    {
+        let mut chats = state.chats.lock();
+        chats.chats.retain(|c| c.dialog_id != dialog_id);
+        chats.chats.push(record.clone());
+        store::save_chats(&state.data_dir, &chats)?;
+    }
+    Ok(serde_json::json!({
+        "id": record.dialog_id,
+        "title": record.title,
+        "access_hash": record.access_hash,
+    }))
 }
 
 fn now_secs() -> i64 {

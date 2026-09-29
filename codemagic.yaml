@@ -89,7 +89,7 @@ workflows:
       - name: Build APK
         script: |
           flutter build apk --release \
-            --dart-define=APP_VERSION=1.2.1 \
+            --dart-define=APP_VERSION=1.3.0 \
             --dart-define=BUILD_COMMIT=${CM_COMMIT:-local}
 
       - name: Verify APK contains libpiarcore.so

@@ -163,7 +163,7 @@ class _ParserScreenState extends State<ParserScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
   }
 
-  /// Просмотр базы (только чтение).
+  /// Просмотр базы (чтение + удаление людей по одному крестиком).
   Future<void> _viewBase(Map<String, dynamic> db) async {
     final name = db['name']?.toString() ?? '';
     final res = PiarCore.instance.call('get_database', {'name': name});
@@ -185,9 +185,35 @@ class _ParserScreenState extends State<ParserScreen> {
               ? const Center(child: Text('Пусто'))
               : ListView.builder(
                   itemCount: lines.length,
-                  itemBuilder: (context, i) => Text(
-                    '@${lines[i]}',
-                    style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                  itemBuilder: (context, i) => Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '@${lines[i]}',
+                          style: const TextStyle(
+                              fontFamily: 'monospace', fontSize: 12),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Убрать',
+                        visualDensity: VisualDensity.compact,
+                        icon: const Icon(Icons.close, size: 16),
+                        onPressed: () async {
+                          final r = await PiarCore.instance.callAsync(
+                              'remove_from_database',
+                              {'name': name, 'usernames': lines[i]});
+                          if (dialogContext.mounted) {
+                            Navigator.pop(dialogContext);
+                          }
+                          _snack(
+                              r.ok ? 'Убран: @${lines[i]}' : 'Ошибка: ${r.errorText}');
+                          _reloadDatabases();
+                          if (mounted) {
+                            _viewBase({'name': name});
+                          }
+                        },
+                      ),
+                    ],
                   ),
                 ),
         ),
@@ -243,6 +269,104 @@ class _ParserScreenState extends State<ParserScreen> {
     ctrl.dispose();
     _snack(res.ok
         ? 'Добавлено: ${res.data is Map ? (res.data as Map)['added'] : 0} новых'
+        : 'Ошибка: ${res.errorText}');
+    _reloadDatabases();
+  }
+
+  /// Создать новую базу (имя + опционально первый список людей).
+  Future<void> _createBase() async {
+    final nameCtrl = TextEditingController();
+    final peopleCtrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Новая база'),
+        content: SizedBox(
+          width: 440,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameCtrl,
+                autofocus: true,
+                decoration: const InputDecoration(
+                    labelText: 'Имя базы (латиницей/цифрами)',
+                    border: OutlineInputBorder()),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: peopleCtrl,
+                maxLines: 4,
+                decoration: const InputDecoration(
+                    labelText: 'Люди (по одному в строке, необязательно)',
+                    border: OutlineInputBorder()),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Отмена')),
+          FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Создать')),
+        ],
+      ),
+    );
+    final name = nameCtrl.text.trim();
+    final people = peopleCtrl.text;
+    nameCtrl.dispose();
+    peopleCtrl.dispose();
+    if (ok != true || name.isEmpty) return;
+    final res = PiarCore.instance
+        .call('create_database', {'name': name, 'usernames': people});
+    _snack(res.ok ? 'База «$name» создана' : 'Ошибка: ${res.errorText}');
+    _reloadDatabases();
+  }
+
+  /// Убрать людей из базы (списком, как добавление).
+  Future<void> _removePeople(Map<String, dynamic> db) async {
+    final name = db['name']?.toString() ?? '';
+    final ctrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Убрать из «$name»'),
+        content: SizedBox(
+          width: 440,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('По одному username в строке (можно с @ или без):',
+                  style: TextStyle(fontSize: 12)),
+              const SizedBox(height: 8),
+              TextField(
+                controller: ctrl,
+                maxLines: 6,
+                decoration: const InputDecoration(
+                    hintText: 'user1\nuser2\n@user3',
+                    border: OutlineInputBorder()),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Отмена')),
+          FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Убрать')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final res = await PiarCore.instance
+        .callAsync('remove_from_database', {'name': name, 'usernames': ctrl.text});
+    ctrl.dispose();
+    _snack(res.ok
+        ? 'Убрано: ${res.data is Map ? (res.data as Map)['removed'] : 0}'
         : 'Ошибка: ${res.errorText}');
     _reloadDatabases();
   }
@@ -410,6 +534,11 @@ class _ParserScreenState extends State<ParserScreen> {
                         style: Theme.of(context).textTheme.titleMedium),
                   ),
                   IconButton(
+                    tooltip: 'Создать новую базу',
+                    icon: const Icon(Icons.create_new_folder_outlined),
+                    onPressed: _createBase,
+                  ),
+                  IconButton(
                     tooltip: 'Обновить',
                     onPressed: _reloadDatabases,
                     icon: const Icon(Icons.refresh),
@@ -443,6 +572,11 @@ class _ParserScreenState extends State<ParserScreen> {
                           tooltip: 'Добавить людей вручную',
                           icon: const Icon(Icons.person_add_alt_outlined),
                           onPressed: () => _addPeople(d),
+                        ),
+                        IconButton(
+                          tooltip: 'Убрать людей',
+                          icon: const Icon(Icons.person_remove_outlined),
+                          onPressed: () => _removePeople(d),
                         ),
                         IconButton(
                           tooltip: 'Скачать на устройство',
