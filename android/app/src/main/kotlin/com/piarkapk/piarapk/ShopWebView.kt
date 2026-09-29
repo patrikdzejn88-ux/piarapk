@@ -12,8 +12,8 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.URLUtil
-import io.flutter.plugin.common.PlatformView
-import io.flutter.plugin.common.PlatformViewFactory
+import io.flutter.plugin.platform.PlatformView
+import io.flutter.plugin.platform.PlatformViewFactory
 import io.flutter.plugin.common.StandardMessageCodec
 
 /**
