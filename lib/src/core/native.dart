@@ -14,6 +14,13 @@ class Native {
     }
   }
 
+  /// Прямой вызов метода канала без аргументов (навигация магазина и т.п.).
+  static Future<void> rawChannelCall(String method) async {
+    try {
+      await _ch.invokeMethod(method);
+    } catch (_) {}
+  }
+
   /// Открыть встроенный браузер (магазин dark.shopping).
   static Future<bool> openShop(String url) async {
     try {

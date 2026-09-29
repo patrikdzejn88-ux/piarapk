@@ -52,19 +52,22 @@ class _ShellState extends State<_Shell> {
     });
   }
 
-  static Widget _page(int i) => switch (i) {
-        0 => const AccountsScreen(),
-        1 => const PiarScreen(),
-        2 => const ParserScreen(),
-        _ => const ShopScreen(),
-      };
+  static const _pages = [
+    AccountsScreen(),
+    PiarScreen(),
+    ParserScreen(),
+    ShopScreen(),
+  ];
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final wide = constraints.maxWidth >= 720;
-        final body = _page(_index);
+        // IndexedStack: все разделы живы одновременно — магазин не
+        // перезагружается при переключении вкладок, состояние парсера
+        // и пиара не теряется
+        final body = IndexedStack(index: _index, children: _pages);
         if (wide) {
           return Scaffold(
             body: Row(

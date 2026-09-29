@@ -76,14 +76,49 @@ class MainActivity : FlutterFragmentActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         // Канал системных путей — вместо нативного плагина path_provider.
-        MethodChannel(
+        val channel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "piarapk/paths"
-        ).setMethodCallHandler { call, result ->
+        )
+        // WebView магазина как PlatformView (вкладка «Магазин» в окне приложения)
+        flutterEngine.platformViewsRegistry.registerViewFactory(
+            "shop-webview",
+            ShopWebViewFactory { url, canBack, canFwd ->
+                channel.invokeMethod(
+                    "shopUrl",
+                    mapOf(
+                        "url" to url,
+                        "canGoBack" to canBack,
+                        "canGoForward" to canFwd
+                    )
+                )
+            }
+        )
+        channel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "getFilesDir" -> result.success(filesDir.absolutePath)
                 "getNativeLibraryDir" -> result.success(applicationInfo.nativeLibraryDir)
                 "getCoreLibStatus" -> result.success(coreLibError ?: "ok")
+                "shopLoad" -> {
+                    ShopWebViewHolder.webView?.loadUrl(
+                        call.argument<String>("url") ?: "https://dark.shopping/"
+                    )
+                    result.success(true)
+                }
+                "shopBack" -> {
+                    ShopWebViewHolder.webView?.goBack()
+                    result.success(true)
+                }
+                "shopForward" -> {
+                    ShopWebViewHolder.webView?.goForward()
+                    result.success(true)
+                }
+                "shopReload" -> {
+                    ShopWebViewHolder.webView?.reload()
+                    result.success(true)
+                }
+                "shopCanGoBack" -> result.success(ShopWebViewHolder.webView?.canGoBack() ?: false)
+                "shopCanGoForward" -> result.success(ShopWebViewHolder.webView?.canGoForward() ?: false)
                 "pickImage" -> {
                     if (pendingPickResult != null) {
                         result.error("PICK_BUSY", "выбор уже идёт", null)
