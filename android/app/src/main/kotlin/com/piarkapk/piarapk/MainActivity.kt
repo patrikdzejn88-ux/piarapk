@@ -80,8 +80,9 @@ class MainActivity : FlutterFragmentActivity() {
             flutterEngine.dartExecutor.binaryMessenger,
             "piarapk/paths"
         )
-        // WebView магазина как PlatformView (вкладка «Магазин» в окне приложения)
-        flutterEngine.platformViewsController.registerViewFactory(
+        // WebView магазина как PlatformView (вкладка «Магазин» в окне приложения);
+        // в 3.47.x реестр фабрик доступен через platformViewsController.registry
+        flutterEngine.platformViewsController.registry.registerViewFactory(
             "shop-webview",
             ShopWebViewFactory { url, canBack, canFwd ->
                 channel.invokeMethod(
