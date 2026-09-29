@@ -43,6 +43,7 @@ class _ShellState extends State<_Shell> {
   void initState() {
     super.initState();
     PiarCore.instance.init();
+    Native.shopWarmup();
     // глобальный слушатель: сбор закончен (в т.ч. остановлен/ошибка) —
     // останавливаем фоновый сервис, даже если экран парсера уже закрыт
     PiarCore.instance.events.listen((e) {

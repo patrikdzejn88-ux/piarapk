@@ -3,6 +3,7 @@ package com.piarkapk.piarapk
 import android.annotation.SuppressLint
 import android.os.Bundle
 import android.view.View
+import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -35,6 +36,8 @@ class WebViewActivity : FragmentActivity() {
         val url = intent.getStringExtra(EXTRA_URL) ?: "https://dark.shopping/"
 
         webView = WebView(this)
+        CookieManager.getInstance().setAcceptCookie(true)
+        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -65,6 +68,7 @@ class WebViewActivity : FragmentActivity() {
             }
 
             override fun onPageFinished(view: WebView, url: String) {
+                CookieManager.getInstance().flush()
                 // показываем после первого рендера (без белой вспышки)
                 view.visibility = View.VISIBLE
             }

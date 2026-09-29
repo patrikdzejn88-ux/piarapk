@@ -205,8 +205,9 @@ class _ParserScreenState extends State<ParserScreen> {
                           if (dialogContext.mounted) {
                             Navigator.pop(dialogContext);
                           }
-                          _snack(
-                              r.ok ? 'Убран: @${lines[i]}' : 'Ошибка: ${r.errorText}');
+                          if (!r.ok) {
+                            _snack('Ошибка: ${r.errorText}');
+                          }
                           _reloadDatabases();
                           if (mounted) {
                             _viewBase({'name': name});
@@ -267,9 +268,9 @@ class _ParserScreenState extends State<ParserScreen> {
     final res = await PiarCore.instance
         .callAsync('add_to_database', {'name': name, 'usernames': ctrl.text});
     ctrl.dispose();
-    _snack(res.ok
-        ? 'Добавлено: ${res.data is Map ? (res.data as Map)['added'] : 0} новых'
-        : 'Ошибка: ${res.errorText}');
+    if (!res.ok) {
+      _snack('Ошибка: ${res.errorText}');
+    }
     _reloadDatabases();
   }
 
@@ -365,9 +366,9 @@ class _ParserScreenState extends State<ParserScreen> {
     final res = await PiarCore.instance
         .callAsync('remove_from_database', {'name': name, 'usernames': ctrl.text});
     ctrl.dispose();
-    _snack(res.ok
-        ? 'Убрано: ${res.data is Map ? (res.data as Map)['removed'] : 0}'
-        : 'Ошибка: ${res.errorText}');
+    if (!res.ok) {
+      _snack('Ошибка: ${res.errorText}');
+    }
     _reloadDatabases();
   }
 

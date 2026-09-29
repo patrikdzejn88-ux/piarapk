@@ -27,6 +27,7 @@ class _PiarScreenState extends State<PiarScreen> {
   bool _busy = false;
   String? _progressLine;
   Map<String, dynamic>? _summary;
+  List<String> _inviteLog = [];
   StreamSubscription<PiarEvent>? _sub;
 
   List<Map<String, dynamic>> _chats = [];
@@ -76,18 +77,36 @@ class _PiarScreenState extends State<PiarScreen> {
     if (e.method != 'invite_start') return;
     if (e.type == 'progress' && mounted) {
       final d = e.data;
-      setState(() => _progressLine =
-          'Добавлено: ${d?['done'] ?? 0} · ошибок: ${d?['failed'] ?? 0}'
-              '${d?['note'] != null ? ' · ${d!['note']}' : ''}');
+      setState(() {
+        _progressLine =
+            'Добавлено: ${d?['done'] ?? 0} · ошибок: ${d?['failed'] ?? 0}'
+                '${d?['note'] != null ? ' · ${d!['note']}' : ''}';
+        _inviteLog = _logFrom(d);
+      });
     }
     if (e.type == 'result' && mounted) {
       setState(() {
         _busy = false;
         _summary = e.ok && e.data is Map ? e.data as Map<String, dynamic> : null;
         _progressLine = e.ok ? null : 'Ошибка: ${e.error}';
+        if (e.ok) {
+          _inviteLog = _logFrom(e.data);
+        } else {
+          final err = e.error?.toString() ?? '';
+          if (err.isNotEmpty) {
+            _inviteLog = [..._inviteLog, err];
+          }
+        }
       });
       _reload();
     }
+  }
+
+  List<String> _logFrom(dynamic data) {
+    if (data is Map && data['log'] is List) {
+      return (data['log'] as List).map((e) => e.toString()).toList();
+    }
+    return _inviteLog;
   }
 
   Future<void> _start() async {
@@ -98,6 +117,7 @@ class _PiarScreenState extends State<PiarScreen> {
     setState(() {
       _busy = true;
       _summary = null;
+      _inviteLog = [];
       _progressLine = 'Запуск…';
     });
     final res = await PiarCore.instance.callAsync('invite_start', {
@@ -111,6 +131,7 @@ class _PiarScreenState extends State<PiarScreen> {
       setState(() {
         _busy = false;
         _progressLine = 'Ошибка: ${res.errorText}';
+        _inviteLog = [..._inviteLog, res.errorText];
       });
     }
   }
@@ -282,6 +303,30 @@ class _PiarScreenState extends State<PiarScreen> {
               if (_progressLine != null) ...[
                 const SizedBox(height: 8),
                 Text(_progressLine!, textAlign: TextAlign.center),
+              ],
+              if (_inviteLog.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Container(
+                  constraints: const BoxConstraints(maxHeight: 140),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.black26,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: _inviteLog.length,
+                    itemBuilder: (_, i) => Text(
+                      _inviteLog[i],
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontFamily: 'monospace',
+                        height: 1.35,
+                      ),
+                    ),
+                  ),
+                ),
               ],
               if (_summary != null) ...[
                 const SizedBox(height: 8),

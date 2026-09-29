@@ -73,6 +73,22 @@ class MainActivity : FlutterFragmentActivity() {
             }.start()
         }
 
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+        // магазин грузится сразу при запуске, ещё до открытия вкладки
+        ShopWebViewHolder.ensure(this)
+    }
+
+    override fun onPause() {
+        ShopWebViewHolder.persistCookies()
+        super.onPause()
+    }
+
+    override fun onStop() {
+        ShopWebViewHolder.persistCookies()
+        super.onStop()
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         // Канал системных путей — вместо нативного плагина path_provider.
@@ -100,9 +116,13 @@ class MainActivity : FlutterFragmentActivity() {
                 "getFilesDir" -> result.success(filesDir.absolutePath)
                 "getNativeLibraryDir" -> result.success(applicationInfo.nativeLibraryDir)
                 "getCoreLibStatus" -> result.success(coreLibError ?: "ok")
+                "shopWarmup" -> {
+                    ShopWebViewHolder.ensure(this)
+                    result.success(true)
+                }
                 "shopLoad" -> {
                     ShopWebViewHolder.webView?.loadUrl(
-                        call.argument<String>("url") ?: "https://dark.shopping/"
+                        call.argument<String>("url") ?: ShopWebViewHolder.SHOP_URL
                     )
                     result.success(true)
                 }

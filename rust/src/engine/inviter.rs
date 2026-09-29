@@ -65,6 +65,7 @@ pub async fn invite_start(
     let mut invited = 0usize;
     let mut failed = 0usize;
     let mut stopped_reason: Option<String> = None;
+    let mut log: Vec<String> = Vec::new();
 
     while !all.is_empty() {
         let batch: Vec<String> = all
@@ -81,18 +82,22 @@ pub async fn invite_start(
                         users.push((&r).into());
                     } else {
                         unresolved += 1;
+                        push_log(&mut log, format!("@{username}: нет peer ref"));
                     }
                 }
-                Ok(None) => unresolved += 1,
-                Err(_) => unresolved += 1,
+                Ok(None) => {
+                    unresolved += 1;
+                    push_log(&mut log, format!("@{username}: не найден"));
+                }
+                Err(e) => {
+                    unresolved += 1;
+                    push_log(&mut log, format!("@{username}: {e}"));
+                }
             }
         }
         if users.is_empty() {
             failed += batch.len();
-            state.progress(
-                "invite_start",
-                serde_json::json!({ "done": invited, "failed": failed, "total": total }),
-            );
+            emit_invite_progress(state, invited, failed, total, &log, None);
             tokio::time::sleep(std::time::Duration::from_millis(BATCH_PAUSE_MS)).await;
             continue;
         }
@@ -110,21 +115,22 @@ pub async fn invite_start(
             Err(e) if e.is("PEER_FLOOD") => {
                 // аккаунт-wide флуд: карантин аккаунта и остановка
                 quarantine_accounts(state, &[acc_id.clone()]);
-                stopped_reason
-                    .get_or_insert(format!("PEER_FLOOD: аккаунт {acc_id} отправлен в карантин"));
+                let reason = format!("PEER_FLOOD: аккаунт {acc_id} отправлен в карантин");
+                push_log(&mut log, reason.clone());
+                stopped_reason.get_or_insert(reason);
                 break;
             }
             Err(e) if e.is("FLOOD_WAIT") => {
                 let secs = flood_wait_secs(&e).unwrap_or(30).min(300);
                 log::warn!("invite: FLOOD_WAIT {secs}s — ждём");
-                state.progress(
-                    "invite_start",
-                    serde_json::json!({
-                        "note": format!("FLOOD_WAIT {secs}s — пережидаем"),
-                        "done": invited,
-                        "failed": failed,
-                        "total": total,
-                    }),
+                push_log(&mut log, format!("FLOOD_WAIT {secs}s — пережидаем"));
+                emit_invite_progress(
+                    state,
+                    invited,
+                    failed,
+                    total,
+                    &log,
+                    Some(format!("FLOOD_WAIT {secs}s — пережидаем")),
                 );
                 tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
                 match client.invoke(&request).await {
@@ -134,29 +140,24 @@ pub async fn invite_start(
                     }
                     Err(e2) if e2.is("PEER_FLOOD") => {
                         quarantine_accounts(state, &[acc_id.clone()]);
-                        stopped_reason
-                            .get_or_insert(format!("PEER_FLOOD: аккаунт {acc_id} в карантине"));
+                        let reason = format!("PEER_FLOOD: аккаунт {acc_id} в карантине");
+                        push_log(&mut log, reason.clone());
+                        stopped_reason.get_or_insert(reason);
                         break;
                     }
-                    Err(_) => {
+                    Err(e2) => {
                         failed += batch.len();
+                        push_log(&mut log, format!("инвайт после FLOOD_WAIT: {e2}"));
                     }
                 }
             }
-            Err(_) => {
+            Err(e) => {
                 failed += batch.len();
+                push_log(&mut log, format!("инвайт отклонён: {e}"));
             }
         }
 
-        state.progress(
-            "invite_start",
-            serde_json::json!({
-                "done": invited,
-                "failed": failed,
-                "total": total,
-                "current_account": acc_id,
-            }),
-        );
+        emit_invite_progress(state, invited, failed, total, &log, None);
 
         if !all.is_empty() {
             tokio::time::sleep(std::time::Duration::from_millis(BATCH_PAUSE_MS)).await;
@@ -168,6 +169,7 @@ pub async fn invite_start(
         "invited": invited,
         "failed": failed,
         "remaining": all.len(),
+        "log": log,
     });
     // сообщение (текст + опционально картинка) в чат после инвайтов
     if (!message.trim().is_empty() || !image_path.trim().is_empty())
@@ -183,6 +185,33 @@ pub async fn invite_start(
     }
     log::info!("invite: готово — {report}");
     Ok(report)
+}
+
+fn push_log(log: &mut Vec<String>, line: String) {
+    log.push(line);
+    if log.len() > 40 {
+        log.remove(0);
+    }
+}
+
+fn emit_invite_progress(
+    state: &AppState,
+    invited: usize,
+    failed: usize,
+    total: usize,
+    log: &[String],
+    note: Option<String>,
+) {
+    let mut payload = serde_json::json!({
+        "done": invited,
+        "failed": failed,
+        "total": total,
+        "log": log,
+    });
+    if let Some(note) = note {
+        payload["note"] = serde_json::json!(note);
+    }
+    state.progress("invite_start", payload);
 }
 
 /// Вытащить секунды из FLOOD_WAIT ошибки.

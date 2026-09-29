@@ -21,6 +21,13 @@ class Native {
     } catch (_) {}
   }
 
+  /// Создать/прогреть WebView магазина при старте приложения.
+  static Future<void> shopWarmup() async {
+    try {
+      await _ch.invokeMethod('shopWarmup');
+    } catch (_) {}
+  }
+
   /// Открыть встроенный браузер (магазин dark.shopping).
   static Future<bool> openShop(String url) async {
     try {
