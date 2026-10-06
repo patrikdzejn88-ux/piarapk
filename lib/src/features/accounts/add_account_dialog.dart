@@ -36,7 +36,6 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
   final _passwordCtrl = TextEditingController();
   final _sessionCtrl = TextEditingController();
   final _apiIdCtrl = TextEditingController();
-  final _apiHashCtrl = TextEditingController();
   final _tdataPathCtrl = TextEditingController();
 
   @override
@@ -48,7 +47,6 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
       _passwordCtrl,
       _sessionCtrl,
       _apiIdCtrl,
-      _apiHashCtrl,
       _tdataPathCtrl,
     ]) {
       c.dispose();
@@ -57,6 +55,13 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
   }
 
   String get _poolLabel => widget.pool == 'parser' ? 'парсер' : 'пиар';
+
+  /// Маска телефона для лога (PII): +79991234567 → +79***67.
+  String _maskPhone(String phone) {
+    final p = phone.trim();
+    if (p.length <= 5) return '***';
+    return '${p.substring(0, 3)}***${p.substring(p.length - 2)}';
+  }
 
   Future<void> _run(Future<void> Function() action) async {
     setState(() {
@@ -212,7 +217,7 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
       );
 
   Future<void> _sendCode() async {
-    PiarCore.instance.note('«Отправить код»: телефон ${_phoneCtrl.text.trim()}');
+    PiarCore.instance.note('«Отправить код»: телефон ${_maskPhone(_phoneCtrl.text)}');
     await _run(() async {
       final res = await widget.controller
           .addPhone(pool: widget.pool, phone: _phoneCtrl.text.trim());
@@ -316,24 +321,9 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
             ),
           ),
           const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _apiIdCtrl,
-                  decoration:
-                      const InputDecoration(labelText: 'api_id (необяз.)'),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: TextField(
-                  controller: _apiHashCtrl,
-                  decoration:
-                      const InputDecoration(labelText: 'api_hash (необяз.)'),
-                ),
-              ),
-            ],
+          TextField(
+            controller: _apiIdCtrl,
+            decoration: const InputDecoration(labelText: 'api_id (необяз.)'),
           ),
           const SizedBox(height: 12),
           FilledButton(
@@ -353,7 +343,6 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
         pool: widget.pool,
         session: _sessionCtrl.text.trim(),
         apiId: int.tryParse(_apiIdCtrl.text.trim()),
-        apiHash: _apiHashCtrl.text.trim(),
       );
       if (res.ok) {
         if (mounted) Navigator.pop(context);

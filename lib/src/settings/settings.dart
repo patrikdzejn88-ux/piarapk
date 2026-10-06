@@ -4,19 +4,22 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 
 /// Настройки приложения в <data>/settings.json (атомарная запись tmp+rename).
-/// На Android — во внутреннем хранилище приложения (через MethodChannel),
-/// на desktop — в рабочей папке data/.
+/// На Android — во внутреннем приватном хранилище приложения (getFilesDir,
+/// через MethodChannel), на desktop — в папке data/ рядом с .exe.
 class SettingsStorage {
   SettingsStorage._();
 
   static String? _dir;
   static Map<String, dynamic> _cache = {};
-  static bool _loaded = false;
 
   static const _channel = MethodChannel('piarapk/paths');
 
   static Future<String> _resolveDir() async {
-    if (!Platform.isAndroid) return 'data';
+    if (!Platform.isAndroid) {
+      // desktop: каталог данных рядом с .exe — не зависит от CWD запуска
+      final exeDir = File(Platform.resolvedExecutable).parent.path;
+      return '$exeDir${Platform.pathSeparator}data';
+    }
     try {
       final p = await _channel.invokeMethod<String>('getFilesDir');
       if (p != null && p.isNotEmpty) return p;
@@ -26,9 +29,13 @@ class SettingsStorage {
 
   static Future<String> _dirPath() async => _dir ??= await _resolveDir();
 
-  static Future<void> _load() async {
-    if (_loaded) return;
-    _loaded = true;
+  static Future<void>? _loadFuture;
+
+  /// Кэшируется сам Future: конкурентные вызовы ждут одну и ту же загрузку,
+  /// а не читают пустой кэш до её завершения.
+  static Future<void> _load() => _loadFuture ??= _doLoad();
+
+  static Future<void> _doLoad() async {
     try {
       final base = await _dirPath();
       final f = File('$base/settings.json');
@@ -54,21 +61,6 @@ class SettingsStorage {
     tmp.renameSync('$base/settings.json');
   }
 
-  static Future<String?> getApiKey() async {
-    await _load();
-    return _cache['dark_shopping_api_key'] as String?;
-  }
-
-  static Future<void> setApiKey(String? key) async {
-    await _load();
-    if (key == null || key.isEmpty) {
-      _cache.remove('dark_shopping_api_key');
-    } else {
-      _cache['dark_shopping_api_key'] = key;
-    }
-    await _flush();
-  }
-
   /// ---- Telegram API (api_id/api_hash с my.telegram.org) ----
 
   static Future<int?> getApiId() async {
@@ -80,7 +72,8 @@ class SettingsStorage {
 
   static Future<String?> getApiHash() async {
     await _load();
-    return _cache['telegram_api_hash'] as String?;
+    final v = _cache['telegram_api_hash'];
+    return v?.toString();
   }
 
   static Future<void> setApiPair(int? id, String? hash) async {

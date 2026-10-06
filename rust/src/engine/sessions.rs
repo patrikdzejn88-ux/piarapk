@@ -27,6 +27,18 @@ pub enum SessionError {
     BadKeyLen(usize),
 }
 
+/// Декодировать base64 StringSession с учётом того, что Telethon кодирует
+/// через `base64.urlsafe_b64encode` (алфавит `-`/`_`), а gramjs — стандартным.
+/// Пробуем urlsafe, затем standard, затем варианты без паддинга.
+fn decode_base64(b64: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
+    URL_SAFE
+        .decode(b64)
+        .or_else(|_| STANDARD.decode(b64))
+        .or_else(|_| URL_SAFE_NO_PAD.decode(b64))
+        .or_else(|_| STANDARD_NO_PAD.decode(b64))
+}
+
 impl StringSessionData {
     /// Декодировать gramjs/telethon StringSession.
     pub fn decode(session: &str) -> Result<Self, SessionError> {
@@ -35,10 +47,12 @@ impl StringSessionData {
             return Err(SessionError::NotStringSession);
         }
         let b64 = &s[1..];
-        let bytes = base64::engine::general_purpose::STANDARD.decode(b64)?;
-        // Тело: либо telethon (352 b64-символа = 263 байта, IPv4 без длины),
-        // либо gramjs (длина адреса перед адресом).
-        let telethon = b64.len() == 352;
+        let bytes = decode_base64(b64)?;
+        // Тело: либо telethon (dc + ipv4 + port + key = 263 байта, IPv4 без
+        // длины адреса), либо gramjs (длина адреса перед адресом).
+        // Считаем по длине ДЕКОДИРОВАННЫХ байт: urlsafe-строка без паддинга
+        // короче 352 символов, но тело всё равно 263 байта.
+        let telethon = bytes.len() == 263;
         let mut pos = 0usize;
         let need = |n: usize, pos: usize, len: usize| -> Result<(), SessionError> {
             if pos + n > len {
@@ -142,5 +156,61 @@ mod tests {
     fn rejects_garbage() {
         assert!(StringSessionData::decode("").is_err());
         assert!(StringSessionData::decode("QmFkU2Vzc2lvbg==").is_err());
+    }
+
+    #[test]
+    fn decodes_urlsafe_telethon_session() {
+        // Telethon кодирует StringSession через base64.urlsafe_b64encode.
+        // Собираем валидную telethon-строку (dc + ipv4 + port + auth_key),
+        // гарантируя наличие urlsafe-символов '-'/'_', которые STANDARD
+        // декодер не принимает (регрессия B.1.1).
+        let mut auth_key = [0u8; 256];
+        auth_key[0] = 0xff; // 111111 -> '_' в urlsafe-алфавите
+        let mut body = Vec::with_capacity(1 + 4 + 2 + 256);
+        body.push(2u8); // dc_id
+        body.extend_from_slice(&[149, 154, 167, 50]); // ipv4
+        body.extend_from_slice(&443i16.to_be_bytes()); // port
+        body.extend_from_slice(&auth_key);
+        let encoded = format!(
+            "1{}",
+            base64::engine::general_purpose::URL_SAFE.encode(&body)
+        );
+        assert!(
+            encoded.contains('_') || encoded.contains('-'),
+            "пример должен содержать urlsafe-символы: {encoded}"
+        );
+        assert!(
+            base64::engine::general_purpose::STANDARD
+                .decode(&encoded[1..])
+                .is_err(),
+            "STANDARD-декодер не должен принимать urlsafe-строку"
+        );
+
+        let decoded = StringSessionData::decode(&encoded).unwrap();
+        assert_eq!(decoded.dc_id, 2);
+        assert_eq!(decoded.ip, "149.154.167.50");
+        assert_eq!(decoded.port, 443);
+        assert_eq!(decoded.auth_key, auth_key);
+    }
+
+    #[test]
+    fn decodes_urlsafe_without_padding() {
+        let mut auth_key = [0u8; 256];
+        auth_key[0] = 0xfb; // 111110 -> '-' в urlsafe-алфавите
+        let mut body = Vec::with_capacity(1 + 4 + 2 + 256);
+        body.push(2u8);
+        body.extend_from_slice(&[149, 154, 167, 50]);
+        body.extend_from_slice(&443i16.to_be_bytes());
+        body.extend_from_slice(&auth_key);
+        let encoded = format!(
+            "1{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&body)
+        );
+        assert!(!encoded.contains('='), "паддинг должен отсутствовать");
+        let decoded = StringSessionData::decode(&encoded).unwrap();
+        assert_eq!(decoded.dc_id, 2);
+        assert_eq!(decoded.ip, "149.154.167.50");
+        assert_eq!(decoded.port, 443);
+        assert_eq!(decoded.auth_key, auth_key);
     }
 }

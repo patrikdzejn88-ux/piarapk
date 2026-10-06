@@ -1,17 +1,23 @@
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 /// Нативные функции Android через MethodChannel (без плагинов).
 class Native {
   static const _ch = MethodChannel('piarapk/paths');
 
-  /// Системный выбор картинки: возвращает путь к скопированному в файлы
-  /// приложения файлу (для отправки через Rust), либо null (отмена/ошибка).
+  /// Канал `piarapk/paths` реализован только на Android: в windows/macos
+  /// обработчика нет, поэтому на desktop действия, требующие канала, честно
+  /// отключаются, а не падают с вечным «Не удалось открыть браузер».
+  static bool get supported => !kIsWeb && Platform.isAndroid;
+
+  /// Системный выбор картинки: путь к скопированному в файлы приложения
+  /// файлу (для отправки через Rust), либо null (отмена). При ошибке
+  /// канала/копирования бросает [PlatformException] с текстом ошибки —
+  /// вызывающий может показать его пользователю.
   static Future<String?> pickImage() async {
-    try {
-      return await _ch.invokeMethod<String>('pickImage');
-    } catch (_) {
-      return null;
-    }
+    return await _ch.invokeMethod<String>('pickImage');
   }
 
   /// Прямой вызов метода канала без аргументов (навигация магазина и т.п.).

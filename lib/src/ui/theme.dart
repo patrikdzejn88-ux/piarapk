@@ -10,13 +10,6 @@ abstract final class AppGradients {
     begin: Alignment.topLeft,
     end: Alignment.bottomRight,
   );
-
-  /// Мягкий фоновой градиент для шапок экранов.
-  static const headerBg = LinearGradient(
-    colors: [Color(0xFF101828), Color(0xFF0B0E14)],
-    begin: Alignment.topCenter,
-    end: Alignment.bottomCenter,
-  );
 }
 
 /// Тема приложения.
@@ -108,7 +101,7 @@ class GradientText extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final effective =
-        style ?? Theme.of(context).textTheme.titleLarge!;
+        style ?? Theme.of(context).textTheme.titleLarge ?? const TextStyle();
     return ShaderMask(
       blendMode: BlendMode.srcIn,
       shaderCallback: (bounds) =>
@@ -195,23 +188,4 @@ class GradientButton extends StatelessWidget {
   }
 }
 
-/// Карточка в фирменном стиле: тёмная, скруглённая, с тонким контуром.
-class AppCard extends StatelessWidget {
-  const AppCard({super.key, required this.child, this.padding});
 
-  final Widget child;
-  final EdgeInsets? padding;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppTheme.surfaceAlt,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
-      ),
-      padding: padding ?? const EdgeInsets.all(14),
-      child: child,
-    );
-  }
-}

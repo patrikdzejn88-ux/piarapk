@@ -24,21 +24,6 @@ pub struct AccountRecord {
     pub added_at: i64,
 }
 
-impl AccountRecord {
-    pub fn display_name(&self) -> String {
-        let n = format!("{} {}", self.first_name, self.last_name).trim().to_string();
-        if !n.is_empty() {
-            n
-        } else if !self.username.is_empty() {
-            format!("@{}", self.username)
-        } else if !self.phone.is_empty() {
-            self.phone.clone()
-        } else {
-            format!("id{}", self.id)
-        }
-    }
-}
-
 /// Чат (цель инвайтов / источник парсинга) в chats.json.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ChatRecord {
@@ -244,9 +229,4 @@ pub fn remove_from_database(
         std::fs::rename(&tmp, &path)?;
     }
     Ok(removed)
-}
-
-/// Удалить одного человека из базы (обёртка над remove_from_database).
-pub fn remove_one(dbs_dir: &Path, name: &str, username: &str) -> std::io::Result<usize> {
-    remove_from_database(dbs_dir, name, std::slice::from_ref(&username.to_string()))
 }

@@ -15,6 +15,11 @@ import android.os.IBinder
  *
  * minSdk = 24: NotificationChannel и Notification.Builder(context, channel)
  * появились в API 26 — для API 24/25 отдельная ветка без канала.
+ *
+ * ВАЖНО (Android 15 / API 35): FGS типа dataSync ограничен системной квотой
+ * (~6 часов в сутки) — очень длинный парсинг система может остановить.
+ * Предупреждение об этом в UX задаётся лимитом на Dart-стороне, поэтому
+ * в рамках Android-модуля не реализуется.
  */
 class ParserService : Service() {
 

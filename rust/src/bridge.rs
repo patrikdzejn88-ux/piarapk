@@ -8,10 +8,12 @@ use std::sync::Arc;
 use crate::engine::state::{state as current_state, AppState, STATE};
 use crate::engine::{auth, chats, connect, import, inviter, scraper, store};
 
-/// Креды приложения (выданы владельцем на my.telegram.org).
-/// Переопределяются настройками приложения при желании.
-pub const DEFAULT_API_ID: i32 = 28614298;
-const DEFAULT_API_HASH: &str = "e482876dfc8d703565d3261bdd7d4bde";
+/// B.2.9: собственная пара api_id/api_hash теперь ОБЯЗАТЕЛЬНА и задаётся
+/// пользователем в настройках API (my.telegram.org → API development tools).
+/// Хардкод-пара удалена: общий api_id означал бы, что бан одного пользователя
+/// затрагивает всех. Формат конфига, который принимает `piar_init`:
+///   {"data_dir":"...","api_id":123456,"api_hash":"<32 hex>"}
+/// (пример приведён только как документация, в рантайме не используется).
 
 fn take_cstr(p: *const c_char) -> String {
     if p.is_null() {
@@ -82,25 +84,40 @@ pub extern "C" fn piar_init(config_json: *const c_char) -> c_int {
         .get("api_id")
         .and_then(|v| v.as_i64())
         .map(|v| v as i32)
-        .unwrap_or(DEFAULT_API_ID);
+        .unwrap_or(0);
     let api_hash = cfg
         .get("api_hash")
         .and_then(|v| v.as_str())
-        .unwrap_or(DEFAULT_API_HASH)
+        .unwrap_or_default()
         .to_string();
+    // B.2.9: без собственной валидной пары api_id/api_hash работать нельзя.
+    // Раньше здесь молча подставлялся захардкоженный общий api_id.
+    if api_id <= 0 || api_hash.trim().is_empty() {
+        log::error!(
+            "piar_init: не задана своя пара api_id/api_hash — укажите её в настройках API \
+             (my.telegram.org → API development tools)"
+        );
+        return -3;
+    }
 
     let data_dir = std::path::PathBuf::from(data_dir);
     let _ = std::fs::create_dir_all(&data_dir);
     let _ = std::fs::create_dir_all(data_dir.join("sessions"));
     let _ = std::fs::create_dir_all(data_dir.join("dbs"));
 
-    let runtime = Arc::new(
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .expect("tokio runtime"),
-    );
+    // build() не должен паниковать через FFI-границу (Rust >= 1.81 — abort):
+    // возвращаем код ошибки, который Dart покажет в lastError.
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => Arc::new(rt),
+        Err(e) => {
+            log::error!("piar_init: не удалось создать tokio runtime: {e}");
+            return -2;
+        }
+    };
 
     let app = AppState {
         chats: parking_lot::Mutex::new(store::load_chats(&data_dir)),
@@ -115,9 +132,13 @@ pub extern "C" fn piar_init(config_json: *const c_char) -> c_int {
         started_at: std::time::Instant::now(),
         parser_cancel: std::sync::atomic::AtomicBool::new(false),
     };
+    let app = Arc::new(app);
     connect::load_entries(&app);
 
-    let _ = STATE.set(Arc::new(app));
+    let _ = STATE.set(app.clone());
+    // Janitor заброшенных PendingAuth (B.2.1): гасит handle, удаляет файл
+    // сессии и не даёт `pending_auths` расти неограниченно.
+    auth::spawn_pending_auth_janitor(&app);
     // Паники в spawn-задачах больше не молчат — уходят в лог-события
     std::panic::set_hook(Box::new(|info| {
         if let Some(app) = current_state() {
@@ -134,17 +155,35 @@ pub extern "C" fn piar_init(config_json: *const c_char) -> c_int {
     }));
     let _ = log::set_boxed_logger(Box::new(EventLogger));
     log::set_max_level(log::LevelFilter::Info);
-    if api_id == DEFAULT_API_ID {
-        log::info!("piarcore: используем штатную пару приложения (api_id={api_id})");
-    } else {
-        log::info!("piarcore: используется своя пара api_id={api_id}");
-    }
+    // B.2.9: пара уже проверена выше и гарантированно своя.
+    log::info!("piarcore: используется своя пара api_id={api_id}");
     0
 }
 
 /// Синхронные методы: быстрые операции без сети.
+/// Паника не должна пересекать FFI-границу (abort на Rust >= 1.81) —
+/// ловим unwind и отдаём `{"code":"PANIC"}` (B.1.3).
 #[no_mangle]
 pub extern "C" fn piar_call(
+    method: *const c_char,
+    params_json: *const c_char,
+    out: *mut *mut c_char,
+) -> c_int {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        piar_call_inner(method, params_json, out)
+    })) {
+        Ok(code) => code,
+        Err(p) => {
+            log::error!("паника в piar_call: {p:?}");
+            write_out(
+                out,
+                r#"{"ok":false,"error":{"code":"PANIC","message":"внутренняя паника ядра"}}"#.into(),
+            )
+        }
+    }
+}
+
+fn piar_call_inner(
     method: *const c_char,
     params_json: *const c_char,
     out: *mut *mut c_char,
@@ -207,13 +246,30 @@ pub extern "C" fn piar_call(
             "error": { "code": "UNKNOWN_METHOD", "message": format!("неизвестный sync-метод: {other}") },
         }),
     };
-    let _ = params;
     write_out(out, resp.to_string())
 }
 
 /// Асинхронные методы: сеть/тяжёлые операции, ответ — событием result.
+/// Пролог тоже защищён catch_unwind (B.1.3): паника в разборе аргументов
+/// не должна ронять процесс.
 #[no_mangle]
 pub extern "C" fn piar_call_async(
+    method: *const c_char,
+    params_json: *const c_char,
+    request_id: *mut u64,
+) -> c_int {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        piar_call_async_inner(method, params_json, request_id)
+    })) {
+        Ok(code) => code,
+        Err(p) => {
+            log::error!("паника в piar_call_async: {p:?}");
+            -1
+        }
+    }
+}
+
+fn piar_call_async_inner(
     method: *const c_char,
     params_json: *const c_char,
     request_id: *mut u64,
@@ -280,6 +336,9 @@ async fn dispatch_async(
             let password = str_param(params, "password", "");
             auth::submit_auth_password(app, &phone, &password).await
         }
+        // Импортируемая StringSession уже содержит готовый auth_key, поэтому api_hash не нужен:
+        // SenderPool::with_configuration в grammers 0.10 принимает только api_id (хэш у граммерса собственный),
+        // а api_hash применяется только при логине по номеру (см. engine/auth.rs).
         "import_string_session" => {
             let pool = str_param(params, "pool", "piar");
             let session = str_param(params, "session", "");
@@ -396,6 +455,24 @@ async fn dispatch_async(
                 Err(e) => Err(auth::err_json("ERROR", e.to_string())),
             }
         }
+        // B.2.8: асинхронные варианты файловых методов — не блокируют UI-изолят.
+        // Синхронные оставлены для обратной совместимости с текущим Dart-вызовом.
+        "list_databases" => {
+            let dbs = store::list_dbs(&app.dbs_dir());
+            let list: Vec<serde_json::Value> = dbs
+                .into_iter()
+                .map(|(name, count)| serde_json::json!({ "name": name, "entries": count }))
+                .collect();
+            Ok(serde_json::Value::Array(list))
+        }
+        "get_database" => {
+            let name = str_param(params, "name", "");
+            let path = store::UserDatabase::path_for(&app.dbs_dir(), &store::sanitize_name(&name));
+            match tokio::fs::read_to_string(&path).await {
+                Ok(content) => Ok(serde_json::json!({ "name": name, "content": content })),
+                Err(e) => Err(auth::err_json("DB_READ", e.to_string())),
+            }
+        }
         other => Err(auth::err_json(
             "UNKNOWN_METHOD",
             format!("неизвестный async-метод: {other}"),
@@ -452,6 +529,25 @@ async fn delete_account(app: &Arc<AppState>, id: &str) -> anyhow::Result<()> {
 
 #[no_mangle]
 pub extern "C" fn piar_poll(_timeout_ms: c_int, out: *mut *mut c_char) -> c_int {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        piar_poll_inner(_timeout_ms, out)
+    })) {
+        Ok(code) => code,
+        Err(p) => {
+            log::error!("паника в piar_poll: {p:?}");
+            // B.1.3: протокол piar_poll всегда отдаёт JSON-массив событий.
+            // Панику оформляем одним error-событием, иначе Dart (`decoded is! List`)
+            // молча терял бы её.
+            write_out(
+                out,
+                r#"[{"type":"error","data":{"code":"PANIC","message":"внутренняя паника ядра"}}]"#
+                    .to_string(),
+            )
+        }
+    }
+}
+
+fn piar_poll_inner(_timeout_ms: c_int, out: *mut *mut c_char) -> c_int {
     let Some(app) = current_state() else {
         return write_out(out, "[]".to_string());
     };
@@ -465,6 +561,12 @@ pub extern "C" fn piar_free(p: *mut c_char) {
     }
 }
 
+/// Завершить работу ядра: гасит все живые клиенты.
+///
+/// ВНИМАНИЕ (B.3.5): семантика **one-shot**. `STATE` — `OnceLock`, он не
+/// очищается, поэтому повторный `piar_init` вернёт 0, но на обесточенном
+/// состоянии (runtime остановлен, клиенты погашены). Повторная инициализация
+/// в одном процессе не поддерживается — нужен перезапуск приложения.
 #[no_mangle]
 pub extern "C" fn piar_shutdown() {
     if let Some(app) = current_state() {

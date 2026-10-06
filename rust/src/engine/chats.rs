@@ -31,10 +31,10 @@ pub async fn resolve_chat(state: &AppState, link: &str) -> anyhow::Result<Peer> 
     let Some(client) = super::connect::connected_client(state, "piar") else {
         return Err(anyhow::anyhow!("нет подключённых аккаунтов — подключите хотя бы один"));
     };
-    // resolve_username возвращает Option<Peer>
-    let peer: Peer = client
-        .resolve_username(&username)
+    // resolve_username возвращает Option<Peer>; B.2.2 — под таймаутом
+    let peer: Peer = super::connect::with_rpc_timeout(client.resolve_username(&username))
         .await
+        .map_err(|_| anyhow::anyhow!("таймаут сети при поиске @{username}"))?
         .map_err(|e| anyhow::anyhow!("ошибка поиска: {e}"))?
         .ok_or_else(|| anyhow::anyhow!("чат @{username} не найден"))?;
     Ok(peer)
@@ -59,7 +59,11 @@ pub async fn add_chat(state: &AppState, link: &str) -> anyhow::Result<serde_json
     let mut members: i64 = 0;
     if let Some(client) = super::connect::connected_client(state, "piar") {
         let mut it = client.iter_participants(peer_ref);
-        members = it.total().await.unwrap_or(0) as i64;
+        // B.2.2: подсчёт участников — сетевой RPC под единым таймаутом
+        members = match super::connect::with_rpc_timeout(it.total()).await {
+            Ok(Ok(n)) => n as i64,
+            _ => 0,
+        };
     }
 
     let record = ChatRecord {
@@ -93,8 +97,10 @@ pub fn chat_peer_ref(record: &ChatRecord) -> anyhow::Result<PeerRef> {
 }
 
 /// Найти запись чата по dialog_id.
+/// B.3.6: обычный lock() (секция короткая) — try_lock давал ложный
+/// CHAT_NOT_FOUND при гонке с add_chat.
 pub fn find_chat(state: &AppState, chat_id: i64) -> Option<ChatRecord> {
-    let chats = state.chats.try_lock()?;
+    let chats = state.chats.lock();
     chats.chats.iter().find(|c| c.dialog_id == chat_id).cloned()
 }
 
@@ -133,15 +139,17 @@ pub async fn post_message(
     };
     let mut message = grammers_client::message::InputMessage::new().text(text);
     if !image_path.trim().is_empty() {
-        let uploaded = client
-            .upload_file(image_path.trim())
+        // B.2.2: загрузка картинки под единым таймаутом
+        let uploaded = super::connect::with_rpc_timeout(client.upload_file(image_path.trim()))
             .await
+            .map_err(|_| anyhow::anyhow!("таймаут сети при загрузке картинки"))?
             .map_err(|e| anyhow::anyhow!("загрузка картинки: {e}"))?;
         message = message.photo(uploaded);
     }
-    client
-        .send_message(peer_ref, message)
+    // B.2.2: отправка под единым таймаутом
+    super::connect::with_rpc_timeout(client.send_message(peer_ref, message))
         .await
+        .map_err(|_| anyhow::anyhow!("таймаут сети при отправке"))?
         .map_err(|e| anyhow::anyhow!("не отправилось: {e}"))?;
     Ok(serde_json::json!({ "sent": true }))
 }
@@ -166,9 +174,10 @@ pub async fn create_readonly_channel(
         address: None,
         ttl_period: None,
     };
-    let updates = client
-        .invoke(&request)
+    // B.2.2: создание канала — сетевой RPC под единым таймаутом
+    let updates = super::connect::with_rpc_timeout(client.invoke(&request))
         .await
+        .map_err(|_| anyhow::anyhow!("таймаут сети при createChannel"))?
         .map_err(|e| anyhow::anyhow!("createChannel: {e}"))?;
 
     // вытащить канал из Updates (обычно Updates::Updates { chats, .. })
@@ -221,9 +230,10 @@ pub async fn list_account_chats(
     let mut out: Vec<serde_json::Value> = Vec::new();
     let mut iter = client.iter_dialogs();
     let mut n = 0usize;
-    while let Some(dialog) = iter
-        .next()
+    // B.2.2: каждый шаг итератора — под единым таймаутом
+    while let Some(dialog) = super::connect::with_rpc_timeout(iter.next())
         .await
+        .map_err(|_| super::auth::err_json("TIMEOUT", "таймаут сети при получении диалогов"))?
         .map_err(|e| super::auth::err_json("ERROR", format!("диалоги: {e}")))?
     {
         let peer = dialog.peer();

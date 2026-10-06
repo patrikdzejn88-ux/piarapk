@@ -49,22 +49,14 @@ class WebViewActivity : FragmentActivity() {
                 view: WebView,
                 request: WebResourceRequest
             ): Boolean {
-                // http/https открываем внутри; внешние схемы (tel:, mailto:) — системе
-                val scheme = request.url.scheme ?: "https"
+                // http/https открываем внутри; наружу — только белый список схем
+                // (tel:, mailto:). Произвольные схемы (intent: и т.п.) игнорируем.
+                val scheme = request.url.scheme?.lowercase() ?: return false
                 if (scheme == "http" || scheme == "https") {
                     return false
                 }
-                return try {
-                    startActivity(
-                        android.content.Intent(
-                            android.content.Intent.ACTION_VIEW,
-                            request.url
-                        )
-                    )
-                    true
-                } catch (_: Exception) {
-                    true
-                }
+                openExternalScheme(view.context, request.url)
+                return true
             }
 
             override fun onPageFinished(view: WebView, url: String) {
@@ -89,5 +81,13 @@ class WebViewActivity : FragmentActivity() {
                 }
             }
         })
+    }
+
+    override fun onDestroy() {
+        if (::webView.isInitialized) {
+            (webView.parent as? android.view.ViewGroup)?.removeView(webView)
+            webView.destroy()
+        }
+        super.onDestroy()
     }
 }

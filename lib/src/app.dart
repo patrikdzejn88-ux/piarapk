@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'core/bridge.dart';
@@ -31,6 +33,8 @@ class _Shell extends StatefulWidget {
 
 class _ShellState extends State<_Shell> {
   int _index = 0;
+  StreamSubscription<PiarEvent>? _eventsSub;
+  late final AppLifecycleListener _lifecycle;
 
   static const _destinations = [
     (icon: Icon(Icons.people_outline), selected: Icon(Icons.people), label: 'Аккаунты'),
@@ -42,15 +46,39 @@ class _ShellState extends State<_Shell> {
   @override
   void initState() {
     super.initState();
-    PiarCore.instance.init();
-    Native.shopWarmup();
+    unawaited(PiarCore.instance.init());
+    unawaited(Native.shopWarmup());
+    // останавливаем поллинг ядра в бэкграунде и возобновляем при возврате
+    _lifecycle = AppLifecycleListener(
+      onStateChange: (state) {
+        switch (state) {
+          case AppLifecycleState.resumed:
+            PiarCore.instance.resumePolling();
+          case AppLifecycleState.paused:
+          case AppLifecycleState.hidden:
+            PiarCore.instance.pausePolling();
+          case AppLifecycleState.inactive:
+          case AppLifecycleState.detached:
+            break;
+        }
+      },
+    );
     // глобальный слушатель: сбор закончен (в т.ч. остановлен/ошибка) —
     // останавливаем фоновый сервис, даже если экран парсера уже закрыт
-    PiarCore.instance.events.listen((e) {
+    _eventsSub = PiarCore.instance.events.listen((e) {
       if (e.type == 'result' && e.method == 'parse_start') {
-        Native.parserServiceStop();
+        unawaited(Native.parserServiceStop());
       }
     });
+  }
+
+  @override
+  void dispose() {
+    _lifecycle.dispose();
+    unawaited(_eventsSub?.cancel());
+    // ядро получает piar_shutdown при завершении приложения
+    PiarCore.instance.shutdown();
+    super.dispose();
   }
 
   static const _pages = [

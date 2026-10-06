@@ -19,7 +19,8 @@ class _ParserScreenState extends State<ParserScreen> {
   final _chatCtrl = TextEditingController();
   final _limitCtrl = TextEditingController(text: '30000');
 
-  bool _busy = false;
+  bool _parsing = false;
+  bool _chatsLoading = false;
   String? _progressLine;
   Map<String, dynamic>? _summary;
   StreamSubscription<PiarEvent>? _sub;
@@ -31,23 +32,24 @@ class _ParserScreenState extends State<ParserScreen> {
   @override
   void initState() {
     super.initState();
-    _reloadDatabases();
+    unawaited(_reloadDatabases());
     _sub = PiarCore.instance.events.listen(_onEvent);
-    PiarCore.instance.init().then((_) {
-      if (mounted) setState(_reloadDatabases);
-    });
+    unawaited(PiarCore.instance.init().then((_) {
+      if (mounted) unawaited(_reloadDatabases());
+    }));
   }
 
   @override
   void dispose() {
-    _sub?.cancel();
+    unawaited(_sub?.cancel());
     _chatCtrl.dispose();
     _limitCtrl.dispose();
     super.dispose();
   }
 
-  void _reloadDatabases() {
-    final res = PiarCore.instance.call('list_databases', {});
+  Future<void> _reloadDatabases() async {
+    // B.2.8: файловый IO — через async-путь, чтобы не блокировать UI-изолят
+    final res = await PiarCore.instance.callAsync('list_databases', {});
     if (res.ok && res.data is List) {
       _databases = (res.data as List)
           .whereType<Map>()
@@ -66,13 +68,13 @@ class _ParserScreenState extends State<ParserScreen> {
     }
     if (e.type == 'result' && mounted) {
       setState(() {
-        _busy = false;
+        _parsing = false;
         _summary = e.ok && e.data is Map ? e.data as Map<String, dynamic> : null;
         _progressLine = e.ok ? null : 'Ошибка: ${e.error}';
       });
       // сервис останавливает глобальный слушатель (app.dart) — работает
       // даже если этот экран уже закрыт
-      _reloadDatabases();
+      unawaited(_reloadDatabases());
     }
   }
 
@@ -83,7 +85,7 @@ class _ParserScreenState extends State<ParserScreen> {
       return;
     }
     setState(() {
-      _busy = true;
+      _parsing = true;
       _summary = null;
       _progressLine = 'Запуск…';
     });
@@ -96,23 +98,23 @@ class _ParserScreenState extends State<ParserScreen> {
             'dialog_id': _selectedChat!['id'],
             'access_hash': _selectedChat!['access_hash'],
             'title': _selectedChat!['title'] ?? '',
-            'limit': int.tryParse(_limitCtrl.text.trim()) ?? 10000,
+            'limit': int.tryParse(_limitCtrl.text.trim()) ?? 30000,
           }
         : {
             'chat': manual,
-            'limit': int.tryParse(_limitCtrl.text.trim()) ?? 10000,
+            'limit': int.tryParse(_limitCtrl.text.trim()) ?? 30000,
           });
     if (!res.ok && mounted) {
       setState(() {
-        _busy = false;
+        _parsing = false;
         _progressLine = 'Ошибка: ${res.errorText}';
       });
-      Native.parserServiceStop();
+      unawaited(Native.parserServiceStop());
     }
   }
 
   Future<void> _loadAccountChats() async {
-    setState(() => _busy = true);
+    setState(() => _chatsLoading = true);
     final res = await PiarCore.instance.callAsync('list_account_chats', {});
     if (!mounted) return;
     if (res.ok && res.data is List) {
@@ -127,14 +129,14 @@ class _ParserScreenState extends State<ParserScreen> {
         final matched =
             _accountChats.where((c) => c['id'] == selId).toList();
         _selectedChat = matched.isEmpty ? null : matched.first;
-        _busy = false;
+        _chatsLoading = false;
         if (_accountChats.isEmpty) {
           _progressLine = 'На аккаунте парсера нет чатов';
         }
       });
     } else {
       setState(() {
-        _busy = false;
+        _chatsLoading = false;
         _progressLine = 'Ошибка: ${res.errorText}';
       });
     }
@@ -142,7 +144,8 @@ class _ParserScreenState extends State<ParserScreen> {
 
   Future<void> _downloadBase(Map<String, dynamic> db) async {
     final name = db['name']?.toString() ?? 'base';
-    final res = PiarCore.instance.call('get_database', {'name': name});
+    // B.2.8: чтение файла — через async-путь, чтобы не блокировать UI-изолят
+    final res = await PiarCore.instance.callAsync('get_database', {'name': name});
     if (!res.ok) {
       _snack('Ошибка чтения базы: ${res.errorText}');
       return;
@@ -166,64 +169,66 @@ class _ParserScreenState extends State<ParserScreen> {
   /// Просмотр базы (чтение + удаление людей по одному крестиком).
   Future<void> _viewBase(Map<String, dynamic> db) async {
     final name = db['name']?.toString() ?? '';
-    final res = PiarCore.instance.call('get_database', {'name': name});
+    // B.2.8: чтение файла — через async-путь, чтобы не блокировать UI-изолят
+    final res = await PiarCore.instance.callAsync('get_database', {'name': name});
     if (!res.ok) {
       _snack('Ошибка чтения: ${res.errorText}');
       return;
     }
     final content =
         res.data is Map ? (res.data as Map)['content']?.toString() ?? '' : '';
-    final lines = content.split('\n').where((l) => l.trim().isNotEmpty).toList();
+    final lines =
+        content.split('\n').where((l) => l.trim().isNotEmpty).toList();
+    if (!mounted) return;
     await showDialog<void>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text('База «$name» · ${lines.length} чел.'),
-        content: SizedBox(
-          width: 440,
-          height: 460,
-          child: lines.isEmpty
-              ? const Center(child: Text('Пусто'))
-              : ListView.builder(
-                  itemCount: lines.length,
-                  itemBuilder: (context, i) => Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          '@${lines[i]}',
-                          style: const TextStyle(
-                              fontFamily: 'monospace', fontSize: 12),
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: Text('База «$name» · ${lines.length} чел.'),
+          content: SizedBox(
+            width: 440,
+            height: 460,
+            child: lines.isEmpty
+                ? const Center(child: Text('Пусто'))
+                : ListView.builder(
+                    itemCount: lines.length,
+                    itemBuilder: (context, i) => Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '@${lines[i]}',
+                            style: const TextStyle(
+                                fontFamily: 'monospace', fontSize: 12),
+                          ),
                         ),
-                      ),
-                      IconButton(
-                        tooltip: 'Убрать',
-                        visualDensity: VisualDensity.compact,
-                        icon: const Icon(Icons.close, size: 16),
-                        onPressed: () async {
-                          final r = await PiarCore.instance.callAsync(
-                              'remove_from_database',
-                              {'name': name, 'usernames': lines[i]});
-                          if (dialogContext.mounted) {
-                            Navigator.pop(dialogContext);
-                          }
-                          if (!r.ok) {
-                            _snack('Ошибка: ${r.errorText}');
-                          }
-                          _reloadDatabases();
-                          if (mounted) {
-                            _viewBase({'name': name});
-                          }
-                        },
-                      ),
-                    ],
+                        IconButton(
+                          tooltip: 'Убрать',
+                          visualDensity: VisualDensity.compact,
+                          icon: const Icon(Icons.close, size: 16),
+                          onPressed: () async {
+                            final r = await PiarCore.instance.callAsync(
+                                'remove_from_database',
+                                {'name': name, 'usernames': lines[i]});
+                            if (!r.ok) {
+                              _snack('Ошибка: ${r.errorText}');
+                              return;
+                            }
+                            if (!dialogContext.mounted) return;
+                            setDialogState(() => lines.removeAt(i));
+                            unawaited(_reloadDatabases());
+                          },
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Закрыть'),
           ),
-        ],
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Закрыть'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -264,14 +269,15 @@ class _ParserScreenState extends State<ParserScreen> {
         ],
       ),
     );
+    final usernames = ctrl.text;
+    ctrl.dispose();
     if (ok != true) return;
     final res = await PiarCore.instance
-        .callAsync('add_to_database', {'name': name, 'usernames': ctrl.text});
-    ctrl.dispose();
+        .callAsync('add_to_database', {'name': name, 'usernames': usernames});
     if (!res.ok) {
       _snack('Ошибка: ${res.errorText}');
     }
-    _reloadDatabases();
+    unawaited(_reloadDatabases());
   }
 
   /// Создать новую базу (имя + опционально первый список людей).
@@ -323,7 +329,7 @@ class _ParserScreenState extends State<ParserScreen> {
     final res = PiarCore.instance
         .call('create_database', {'name': name, 'usernames': people});
     _snack(res.ok ? 'База «$name» создана' : 'Ошибка: ${res.errorText}');
-    _reloadDatabases();
+    unawaited(_reloadDatabases());
   }
 
   /// Убрать людей из базы (списком, как добавление).
@@ -362,14 +368,15 @@ class _ParserScreenState extends State<ParserScreen> {
         ],
       ),
     );
+    final usernames = ctrl.text;
+    ctrl.dispose();
     if (ok != true) return;
     final res = await PiarCore.instance
-        .callAsync('remove_from_database', {'name': name, 'usernames': ctrl.text});
-    ctrl.dispose();
+        .callAsync('remove_from_database', {'name': name, 'usernames': usernames});
     if (!res.ok) {
       _snack('Ошибка: ${res.errorText}');
     }
-    _reloadDatabases();
+    unawaited(_reloadDatabases());
   }
 
   /// Удаление базы с подтверждением.
@@ -395,7 +402,7 @@ class _ParserScreenState extends State<ParserScreen> {
     if (ok != true) return;
     final res = await PiarCore.instance.callAsync('delete_database', {'name': name});
     _snack(res.ok ? 'База «$name» удалена' : 'Ошибка: ${res.errorText}');
-    _reloadDatabases();
+    unawaited(_reloadDatabases());
   }
 
   @override
@@ -432,13 +439,20 @@ class _ParserScreenState extends State<ParserScreen> {
                         style: Theme.of(context).textTheme.bodyMedium),
                   ),
                   TextButton.icon(
-                    onPressed: _busy ? null : _loadAccountChats,
-                    icon: const Icon(Icons.refresh, size: 18),
+                    onPressed: _chatsLoading ? null : _loadAccountChats,
+                    icon: _chatsLoading
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.refresh, size: 18),
                     label: const Text('Загрузить'),
                   ),
                 ],
               ),
               DropdownButtonFormField<Map<String, dynamic>>(
+                key: ValueKey(_selectedChat?['id']),
                 initialValue: _selectedChat,
                 isExpanded: true,
                 decoration: const InputDecoration(
@@ -491,17 +505,19 @@ class _ParserScreenState extends State<ParserScreen> {
                   Expanded(
                     child: GradientButton(
                       onPressed: _start,
-                      busy: _busy,
-                      label: _busy ? 'Собираем…' : 'Собрать',
+                      busy: _parsing,
+                      label: _parsing ? 'Собираем…' : 'Собрать',
                       icon: const Icon(Icons.play_arrow_outlined),
                     ),
                   ),
-                  if (_busy) ...[
+                  if (_parsing) ...[
                     const SizedBox(width: 8),
                     OutlinedButton.icon(
-                      onPressed: () {
-                        PiarCore.instance.callAsync('parse_cancel', {});
-                        _snack('Останавливаю… (собранное сохранится)');
+                      onPressed: () async {
+                        final r = await PiarCore.instance.callAsync('parse_cancel', {});
+                        _snack(r.ok
+                            ? 'Останавливаю… (собранное сохранится)'
+                            : 'Не удалось остановить: ${r.errorText}');
                       },
                       icon: const Icon(Icons.stop_circle_outlined),
                       label: const Text('Стоп'),
@@ -519,6 +535,7 @@ class _ParserScreenState extends State<ParserScreen> {
                   child: Padding(
                     padding: const EdgeInsets.all(12),
                     child: Text(
+                      '${(_summary!['truncated'] == true || _summary!['partial'] == true) ? '⚠ База неполная (сбор прерван или ошибка сети) — повторите сбор. ' : ''}'
                       'Готово. Уникальных сохранено: ${_summary!['saved'] ?? 0}, '
                       'пропущено (без username/дубли): ${_summary!['skipped'] ?? 0}'
                       '${_summary!['base'] != null ? ' · база: ${_summary!['base']}' : ''}',
@@ -582,7 +599,8 @@ class _ParserScreenState extends State<ParserScreen> {
                         IconButton(
                           tooltip: 'Скачать на устройство',
                           icon: const Icon(Icons.download_outlined),
-                          onPressed: () => _downloadBase(d),
+                          onPressed:
+                              Native.supported ? () => _downloadBase(d) : null,
                         ),
                         IconButton(
                           tooltip: 'Удалить базу',

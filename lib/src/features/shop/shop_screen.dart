@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -43,8 +44,24 @@ class _ShopScreenState extends State<ShopScreen> {
     });
   }
 
+  @override
+  void dispose() {
+    // сбрасываем обработчик канала: иначе замыкание держит State вечно
+    _shopChannel.setMethodCallHandler(null);
+    super.dispose();
+  }
+
   void _do(String method) {
-    Native.rawChannelCall(method);
+    unawaited(Native.rawChannelCall(method));
+  }
+
+  Future<void> _openExternally(String url) async {
+    final ok = await Native.openShop(url);
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось открыть браузер')),
+      );
+    }
   }
 
   @override
@@ -97,9 +114,9 @@ class _ShopScreenState extends State<ShopScreen> {
                 ),
               ),
               IconButton(
-                tooltip: 'Открыть в системном браузере',
+                tooltip: 'Открыть в отдельном окне',
                 visualDensity: VisualDensity.compact,
-                onPressed: () => Native.openShop(_url),
+                onPressed: () => _openExternally(_url),
                 icon: const Icon(Icons.open_in_new, size: 18),
               ),
             ],
@@ -145,10 +162,20 @@ class _ShopScreenState extends State<ShopScreen> {
             ),
             const SizedBox(height: 24),
             GradientButton(
-              onPressed: () => Native.openShop('https://dark.shopping/'),
+              onPressed: Native.supported
+                  ? () => _openExternally('https://dark.shopping/')
+                  : null,
               label: 'Открыть магазин',
               icon: const Icon(Icons.open_in_browser),
             ),
+            if (!Native.supported) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Магазин доступен только на Android.',
+                style: Theme.of(context).textTheme.bodySmall,
+                textAlign: TextAlign.center,
+              ),
+            ],
           ],
         ),
       ),

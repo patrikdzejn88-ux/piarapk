@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'dart:async';
 
 import 'package:flutter/widgets.dart';
 
@@ -16,16 +16,10 @@ Future<void> main() async {
     FlutterError.presentError(details);
   };
 
-  // Каталог данных приложения создаётся мостом при init(); принудительно
-  // готовим рабочую папку до запуска UI.
-  try {
-    Directory('data').createSync(recursive: true);
-  } catch (_) {}
-
-  // Своя пара api_id/api_hash (my.telegram.org) — если задана в настройках,
-  // передаём в ядро; иначе ядро использует публичную (может отклоняться).
+  // Своя пара api_id/api_hash (my.telegram.org) обязательна: без неё ядро
+  // не инициализируется (код -3), дефолтной пары нет.
   final apiId = await SettingsStorage.getApiId();
   final apiHash = await SettingsStorage.getApiHash();
-  PiarCore.instance.init(apiId: apiId, apiHash: apiHash);
+  unawaited(PiarCore.instance.init(apiId: apiId, apiHash: apiHash));
   runApp(const PiarApp());
 }

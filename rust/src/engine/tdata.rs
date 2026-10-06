@@ -14,6 +14,9 @@ use md5::Digest as _;
 type Aes256IgeEnc = ige::Encryptor<aes::Aes256>;
 type Aes256IgeDec = ige::Decryptor<aes::Aes256>;
 
+/// Порт DC по умолчанию: формат tdata порт не хранит (B.3.3).
+pub const TDATA_DC_PORT: i32 = 443;
+
 #[derive(Debug, thiserror::Error)]
 pub enum TdataError {
     #[error("файл не найден: {0}")]
@@ -326,7 +329,7 @@ pub fn parse_tdata(tdata_dir: &Path) -> Result<TdataInfo, TdataError> {
                 main_dc,
                 auth_key,
                 ip,
-                port: 443,
+                port: TDATA_DC_PORT,
             });
         }
     }

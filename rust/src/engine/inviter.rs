@@ -3,6 +3,8 @@
 //! аккаунта с остановкой (ротации нет — аккаунт один). После инвайтов
 //! отправляется сообщение в чат.
 
+use std::time::Duration;
+
 use grammers_session::types::PeerRef;
 
 use super::state::AppState;
@@ -68,6 +70,13 @@ pub async fn invite_start(
     let mut log: Vec<String> = Vec::new();
 
     while !all.is_empty() {
+        // B.2.4: инвайт можно отменить тем же флагом, что и парсинг
+        if state.parser_cancelled() {
+            let reason = "остановлено пользователем".to_string();
+            push_log(&mut log, reason.clone());
+            stopped_reason.get_or_insert(reason);
+            break;
+        }
         let batch: Vec<String> = all
             .drain(..INVITE_BATCH.min(all.len()))
             .collect();
@@ -76,8 +85,9 @@ pub async fn invite_start(
         let mut users: Vec<grammers_tl_types::enums::InputUser> = Vec::with_capacity(batch.len());
         let mut unresolved = 0usize;
         for username in &batch {
-            match client.resolve_username(username).await {
-                Ok(Some(peer)) => {
+            // B.2.2: резолв username — сетевой RPC под единым таймаутом
+            match super::connect::with_rpc_timeout(client.resolve_username(username)).await {
+                Ok(Ok(Some(peer))) => {
                     if let Some(r) = peer.to_ref().await.ok().flatten() {
                         users.push((&r).into());
                     } else {
@@ -85,20 +95,32 @@ pub async fn invite_start(
                         push_log(&mut log, format!("@{username}: нет peer ref"));
                     }
                 }
-                Ok(None) => {
+                Ok(Ok(None)) => {
                     unresolved += 1;
                     push_log(&mut log, format!("@{username}: не найден"));
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     unresolved += 1;
                     push_log(&mut log, format!("@{username}: {e}"));
                 }
+                Err(_) => {
+                    unresolved += 1;
+                    push_log(&mut log, format!("@{username}: таймаут сети"));
+                }
             }
+        }
+        // B.2.4: отмена во время резолва usernames
+        if state.parser_cancelled() {
+            stopped_reason.get_or_insert("остановлено пользователем".to_string());
+            break;
         }
         if users.is_empty() {
             failed += batch.len();
             emit_invite_progress(state, invited, failed, total, &log, None);
-            tokio::time::sleep(std::time::Duration::from_millis(BATCH_PAUSE_MS)).await;
+            if !cancellable_sleep(state, Duration::from_millis(BATCH_PAUSE_MS)).await {
+                stopped_reason.get_or_insert("остановлено пользователем".to_string());
+                break;
+            }
             continue;
         }
 
@@ -107,12 +129,13 @@ pub async fn invite_start(
             users,
         };
 
-        match client.invoke(&request).await {
-            Ok(_) => {
+        // B.2.2: инвайт — сетевой RPC под единым таймаутом
+        match super::connect::with_rpc_timeout(client.invoke(&request)).await {
+            Ok(Ok(_)) => {
                 invited += batch.len() - unresolved;
                 failed += unresolved;
             }
-            Err(e) if e.is("PEER_FLOOD") => {
+            Ok(Err(e)) if e.is("PEER_FLOOD") => {
                 // аккаунт-wide флуд: карантин аккаунта и остановка
                 quarantine_accounts(state, &[acc_id.clone()]);
                 let reason = format!("PEER_FLOOD: аккаунт {acc_id} отправлен в карантин");
@@ -120,7 +143,7 @@ pub async fn invite_start(
                 stopped_reason.get_or_insert(reason);
                 break;
             }
-            Err(e) if e.is("FLOOD_WAIT") => {
+            Ok(Err(e)) if e.is("FLOOD_WAIT") => {
                 let secs = flood_wait_secs(&e).unwrap_or(30).min(300);
                 log::warn!("invite: FLOOD_WAIT {secs}s — ждём");
                 push_log(&mut log, format!("FLOOD_WAIT {secs}s — пережидаем"));
@@ -132,35 +155,54 @@ pub async fn invite_start(
                     &log,
                     Some(format!("FLOOD_WAIT {secs}s — пережидаем")),
                 );
-                tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
-                match client.invoke(&request).await {
-                    Ok(_) => {
+                // B.2.4: FLOOD_WAIT-пауза прерывается отменой
+                if !cancellable_sleep(state, Duration::from_secs(secs)).await {
+                    stopped_reason.get_or_insert("остановлено пользователем".to_string());
+                    break;
+                }
+                // B.2.2: повтор после FLOOD_WAIT — тоже под таймаутом
+                match super::connect::with_rpc_timeout(client.invoke(&request)).await {
+                    Ok(Ok(_)) => {
                         invited += batch.len() - unresolved;
                         failed += unresolved;
                     }
-                    Err(e2) if e2.is("PEER_FLOOD") => {
+                    Ok(Err(e2)) if e2.is("PEER_FLOOD") => {
                         quarantine_accounts(state, &[acc_id.clone()]);
                         let reason = format!("PEER_FLOOD: аккаунт {acc_id} в карантине");
                         push_log(&mut log, reason.clone());
                         stopped_reason.get_or_insert(reason);
                         break;
                     }
-                    Err(e2) => {
+                    Ok(Err(e2)) => {
                         failed += batch.len();
                         push_log(&mut log, format!("инвайт после FLOOD_WAIT: {e2}"));
                     }
+                    Err(_) => {
+                        failed += batch.len();
+                        push_log(
+                            &mut log,
+                            "инвайт после FLOOD_WAIT: таймаут сети".to_string(),
+                        );
+                    }
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 failed += batch.len();
                 push_log(&mut log, format!("инвайт отклонён: {e}"));
+            }
+            Err(_) => {
+                failed += batch.len();
+                push_log(&mut log, "инвайт: таймаут сети".to_string());
             }
         }
 
         emit_invite_progress(state, invited, failed, total, &log, None);
 
-        if !all.is_empty() {
-            tokio::time::sleep(std::time::Duration::from_millis(BATCH_PAUSE_MS)).await;
+        if !all.is_empty()
+            && !cancellable_sleep(state, Duration::from_millis(BATCH_PAUSE_MS)).await
+        {
+            stopped_reason.get_or_insert("остановлено пользователем".to_string());
+            break;
         }
     }
 
@@ -185,6 +227,22 @@ pub async fn invite_start(
     }
     log::info!("invite: готово — {report}");
     Ok(report)
+}
+
+/// B.2.4: прерываемый сон — проверяет отмену парсера/инвайта каждые 200 мс.
+/// Возвращает `false`, если поступил запрос отмены.
+async fn cancellable_sleep(state: &AppState, dur: Duration) -> bool {
+    let step = Duration::from_millis(200);
+    let mut left = dur;
+    while !left.is_zero() {
+        if state.parser_cancelled() {
+            return false;
+        }
+        let s = step.min(left);
+        tokio::time::sleep(s).await;
+        left = left.saturating_sub(s);
+    }
+    !state.parser_cancelled()
 }
 
 fn push_log(log: &mut Vec<String>, line: String) {
@@ -231,7 +289,11 @@ fn quarantine_accounts(state: &AppState, ids: &[String]) {
         for id in ids {
             if let Some(e) = accounts.get_mut(id) {
                 e.record.restricted = true;
-                e.live = None; // отключаем (handle дропнется)
+                // B.1.4: перед сбросом live вызываем quit(), иначе утечка
+                // соединения и «лишнее устройство» в Telegram
+                if let Some(l) = e.live.take() {
+                    l._handle.quit();
+                }
             }
         }
     }

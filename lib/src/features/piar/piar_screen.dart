@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/bridge.dart';
 import '../../core/native.dart';
@@ -36,39 +37,52 @@ class _PiarScreenState extends State<PiarScreen> {
   @override
   void initState() {
     super.initState();
-    _reload();
+    unawaited(_reload());
     _sub = PiarCore.instance.events.listen(_onEvent);
-    PiarCore.instance.init().then((_) {
-      if (mounted) setState(_reload);
-    });
+    unawaited(PiarCore.instance.init().then((_) {
+      if (mounted) unawaited(_reload());
+    }));
   }
 
   @override
   void dispose() {
-    _sub?.cancel();
+    unawaited(_sub?.cancel());
     _messageCtrl.dispose();
     _countCtrl.dispose();
     super.dispose();
   }
 
-  void _reload() {
+  Future<void> _reload() async {
     final chats = PiarCore.instance.call('list_chats', {});
     if (chats.ok && chats.data is List) {
       _chats = (chats.data as List)
           .whereType<Map>()
           .map((m) => m.cast<String, dynamic>())
           .toList();
-      if (_chat == null && _chats.isNotEmpty) {
-        _chat = _chats.first;
+      // новые Map-инстансы не равны старым по ==: перевыбираем чат по id,
+      // иначе DropdownButtonFormField упадёт на протухшем initialValue
+      if (_chat == null) {
+        _chat = _chats.isNotEmpty ? _chats.first : null;
+      } else {
+        final selId = _chat!['id'];
+        final matched = _chats.where((c) => c['id'] == selId).toList();
+        _chat = matched.isEmpty ? null : matched.first;
       }
     }
-    final dbs = PiarCore.instance.call('list_databases', {});
+    // B.2.8: файловый IO — через async-путь, чтобы не блокировать UI-изолят
+    final dbs = await PiarCore.instance.callAsync('list_databases', {});
     if (dbs.ok && dbs.data is List) {
       _databases = (dbs.data as List)
           .whereType<Map>()
           .map((m) => m.cast<String, dynamic>())
           .toList();
-      _database ??= _databases.isNotEmpty ? _databases.first['name'] as String? : null;
+      // выбранная база могла быть удалена — проверяем существование
+      final dbNames =
+          _databases.map((d) => d['name']?.toString()).toSet();
+      if (_database == null || !dbNames.contains(_database)) {
+        _database =
+            _databases.isNotEmpty ? _databases.first['name']?.toString() : null;
+      }
     }
     if (mounted) setState(() {});
   }
@@ -77,10 +91,11 @@ class _PiarScreenState extends State<PiarScreen> {
     if (e.method != 'invite_start') return;
     if (e.type == 'progress' && mounted) {
       final d = e.data;
+      if (d is! Map) return;
       setState(() {
         _progressLine =
-            'Добавлено: ${d?['done'] ?? 0} · ошибок: ${d?['failed'] ?? 0}'
-                '${d?['note'] != null ? ' · ${d!['note']}' : ''}';
+            'Добавлено: ${d['done'] ?? 0} · ошибок: ${d['failed'] ?? 0}'
+                '${d['note'] != null ? ' · ${d['note']}' : ''}';
         _inviteLog = _logFrom(d);
       });
     }
@@ -98,7 +113,7 @@ class _PiarScreenState extends State<PiarScreen> {
           }
         }
       });
-      _reload();
+      unawaited(_reload());
     }
   }
 
@@ -150,16 +165,26 @@ class _PiarScreenState extends State<PiarScreen> {
   }
 
   Future<void> _pickImage() async {
-    final path = await Native.pickImage();
-    if (!mounted) return;
-    if (path == null) {
-      _snack('Картинка не выбрана');
+    if (!Native.supported) {
+      _snack('Выбор картинки доступен только на Android');
       return;
     }
-    setState(() {
-      _imagePath = path;
-      _imageName = path.split(Platform.pathSeparator).last;
-    });
+    try {
+      final path = await Native.pickImage();
+      if (!mounted) return;
+      if (path == null) {
+        _snack('Картинка не выбрана');
+        return;
+      }
+      setState(() {
+        _imagePath = path;
+        _imageName = path.split(Platform.pathSeparator).last;
+      });
+    } on PlatformException catch (e) {
+      if (mounted) {
+        _snack('Ошибка выбора картинки: ${e.message ?? e.code}');
+      }
+    }
   }
 
   Future<void> _addChat() async {
@@ -168,7 +193,7 @@ class _PiarScreenState extends State<PiarScreen> {
       builder: (_) => const _AddChatDialog(),
     );
     if (ok == true) {
-      _reload();
+      await _reload();
     }
   }
 
@@ -205,6 +230,7 @@ class _PiarScreenState extends State<PiarScreen> {
               ),
               const SizedBox(height: 20),
               DropdownButtonFormField<Map<String, dynamic>>(
+                key: ValueKey(_chat?['id']),
                 initialValue: _chat,
                 decoration: const InputDecoration(
                     labelText: 'Чат (куда добавляем людей)',
@@ -229,6 +255,7 @@ class _PiarScreenState extends State<PiarScreen> {
               ),
               const SizedBox(height: 8),
               DropdownButtonFormField<String>(
+                key: ValueKey(_database),
                 initialValue: _database,
                 decoration: const InputDecoration(
                     labelText: 'База людей (собирается в разделе «Парсер»)',
@@ -264,7 +291,7 @@ class _PiarScreenState extends State<PiarScreen> {
               Row(
                 children: [
                   OutlinedButton.icon(
-                    onPressed: _pickImage,
+                    onPressed: Native.supported ? _pickImage : null,
                     icon: const Icon(Icons.image_outlined),
                     label: Text(_imagePath == null
                         ? 'Картинка'
@@ -297,7 +324,7 @@ class _PiarScreenState extends State<PiarScreen> {
               const SizedBox(height: 8),
               IconButton(
                 tooltip: 'Обновить списки',
-                onPressed: () => setState(_reload),
+                onPressed: _reload,
                 icon: const Icon(Icons.refresh),
               ),
               if (_progressLine != null) ...[
@@ -378,7 +405,7 @@ class _AddChatDialogState extends State<_AddChatDialog> {
   @override
   void initState() {
     super.initState();
-    _loadAccountChats();
+    unawaited(_loadAccountChats());
   }
 
   @override

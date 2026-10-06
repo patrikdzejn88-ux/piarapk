@@ -4,6 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use grammers_client::client::{Client, LoginToken, PasswordToken};
 use grammers_mtsender::SenderPoolFatHandle;
@@ -23,9 +24,20 @@ impl EventQueue {
     pub fn push(&self, event_json: String) {
         let mut q = self.queue.lock();
         q.push_back(event_json);
-        // защита от переполнения, если поллер Dart надолго встал (бэкграунд)
+        // защита от переполнения, если поллер Dart надолго встал (бэкграунд).
+        // B.2.5: result-события не вытесняем — иначе финальный результат
+        // callAsync теряется и Dart-Future висит до таймаута.
         if q.len() > 2000 {
-            q.pop_front();
+            let victim = q.iter().position(|e| !e.contains("\"type\":\"result\""));
+            match victim {
+                Some(i) => {
+                    q.remove(i);
+                }
+                // очередь из одних result — вытесняем самый старый
+                None => {
+                    q.pop_front();
+                }
+            }
         }
     }
 
@@ -67,6 +79,8 @@ pub struct PendingAuth {
     pub password_token: Option<PasswordToken>,
     /// Имя файла сессии (в sessions/) — фиксируется при создании попытки.
     pub session_file: String,
+    /// Момент создания попытки — для TTL-уборки заброшенных PendingAuth (B.2.1).
+    pub created_at: Instant,
 }
 
 /// Глобальное состояние ядра.

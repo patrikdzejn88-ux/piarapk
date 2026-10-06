@@ -16,6 +16,33 @@ pub struct StartedClient {
     pub handle: SenderPoolFatHandle,
 }
 
+/// Единый таймаут сетевых RPC (B.2.2): 45 с.
+pub const RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// Ошибка истечения таймаута RPC (B.2.2).
+#[derive(Debug)]
+pub struct RpcTimeout;
+
+impl std::fmt::Display for RpcTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "таймаут сети ({} с)", RPC_TIMEOUT.as_secs())
+    }
+}
+
+impl std::error::Error for RpcTimeout {}
+
+/// Обернуть RPC-фьючер в единый таймаут (B.2.2), чтобы мёртвая сеть
+/// не держала задачу бесконечно.
+pub async fn with_rpc_timeout<F, T>(fut: F) -> Result<T, RpcTimeout>
+where
+    F: std::future::Future<Output = T>,
+{
+    match tokio::time::timeout(RPC_TIMEOUT, fut).await {
+        Ok(v) => Ok(v),
+        Err(_) => Err(RpcTimeout),
+    }
+}
+
 /// Запустить клиент из файла сессии (спавнит runner в текущем runtime).
 pub async fn start_client(
     session_path: &std::path::Path,
@@ -76,11 +103,40 @@ pub async fn connect_account(state: &AppState, id: &str) -> anyhow::Result<serde
     }
     let session_path = state.sessions_dir().join(&session_file);
     let started = start_client(&session_path, state.api_id).await?;
-    let authorized = started.client.is_authorized().await?;
+    // B.1.4: на error-путях после start_client гасим клиент, иначе утечка
+    // соединения; B.2.2: RPC под единым таймаутом.
+    let authorized = match with_rpc_timeout(started.client.is_authorized()).await {
+        Ok(Ok(a)) => a,
+        Ok(Err(e)) => {
+            started.handle.quit();
+            return Err(anyhow::anyhow!("проверка авторизации: {e}"));
+        }
+        Err(_) => {
+            started.handle.quit();
+            return Err(anyhow::anyhow!(
+                "таймаут сети ({} с) при проверке авторизации",
+                RPC_TIMEOUT.as_secs()
+            ));
+        }
+    };
     if !authorized {
+        started.handle.quit();
         return Err(anyhow::anyhow!("сессия не авторизована (файл повреждён/логин не завершён)"));
     }
-    let me = started.client.get_me().await?;
+    let me = match with_rpc_timeout(started.client.get_me()).await {
+        Ok(Ok(m)) => m,
+        Ok(Err(e)) => {
+            started.handle.quit();
+            return Err(anyhow::anyhow!("get_me: {e}"));
+        }
+        Err(_) => {
+            started.handle.quit();
+            return Err(anyhow::anyhow!(
+                "таймаут сети ({} с) при get_me",
+                RPC_TIMEOUT.as_secs()
+            ));
+        }
+    };
     let (first_name, last_name, username, phone) = (
         me.first_name().unwrap_or_default().to_string(),
         me.last_name().unwrap_or_default().to_string(),
@@ -184,6 +240,8 @@ pub fn move_account(
     record.pool = to_pool.to_string();
     record.id = format!("{uid}@{to_pool}");
     let new_id = record.id.clone();
+    let new_session_file = record.session_file.clone();
+    let mut replaced_file: Option<String> = None;
     {
         let mut accounts = state.accounts.write();
         // если в целевом пуле уже есть запись этого же аккаунта —
@@ -192,9 +250,25 @@ pub fn move_account(
             if let Some(l) = old.live.take() {
                 l._handle.quit();
             }
+            // B.3.4: файл сессии перезаписываемой записи выпадает из
+            // реестра — удалим его ниже, если он не совпадает с новым
+            replaced_file = Some(old.record.session_file.clone());
         }
         accounts.remove(&old_id);
         accounts.insert(new_id.clone(), AccountEntry { record, live });
+    }
+    // B.3.4: удаляем осиротевший файл, если он отличается от нового и
+    // больше никем не используется
+    if let Some(old_file) = replaced_file {
+        if old_file != new_session_file {
+            let still_used = {
+                let accounts = state.accounts.read();
+                accounts.values().any(|e| e.record.session_file == old_file)
+            };
+            if !still_used {
+                let _ = std::fs::remove_file(state.sessions_dir().join(old_file));
+            }
+        }
     }
     save_accounts_state(state);
     log::info!("move_account: {old_id} → {new_id}");

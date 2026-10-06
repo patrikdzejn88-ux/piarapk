@@ -1,6 +1,7 @@
 //! Авторизация по номеру: телефон → код → (2FA) → аккаунт.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use grammers_client::client::{LoginToken, SignInError};
 use grammers_client::client::Client;
@@ -19,7 +20,9 @@ pub async fn add_account_phone(
     raw_phone: &str,
 ) -> anyhow::Result<serde_json::Value> {
     let phone = normalize_phone(raw_phone);
-    log::info!("add_account_phone: {phone} (пул {pool})");
+    // B.3.1: телефон — PII, в логи только маска
+    let masked = mask_phone(&phone);
+    log::info!("add_account_phone: {masked} (пул {pool})");
     // погасить прошлую попытку (тот же телефон).
     // ВАЖНО: parking_lot-гард не должен переживать .await (future: Send),
     // поэтому блокировка строго в scoped-блоке до await.
@@ -48,8 +51,13 @@ pub async fn add_account_phone(
     let stem = super::import::unique_stem(state, &format!("pending_{base}"));
     let session_file = format!("{stem}.sqlite");
     let session_path = sessions_dir.join(&session_file);
+    // B.2.6: не удаляем чужой файл сессии без проверки владельца —
+    // имя уже уникально (unique_stem), существование = гонка/чужой файл
     if session_path.exists() {
-        let _ = tokio::fs::remove_file(&session_path).await;
+        anyhow::bail!(
+            "файл сессии {} уже существует — повторите запрос кода",
+            session_path.display()
+        );
     }
     let session = Arc::new(SqliteSession::open(&session_path).await?);
     let params = ConnectionParams {
@@ -81,16 +89,30 @@ pub async fn add_account_phone(
         while rx.recv().await.is_some() {}
     });
 
-    log::info!("запрашиваем код для {phone}");
+    log::info!("запрашиваем код для {masked}");
     // таймаут сети: без него недоступная сеть = вечный спиннер вместо ошибки
-    let login_token: LoginToken = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
+    let login_token: LoginToken = match tokio::time::timeout(
+        Duration::from_secs(30),
         client.request_login_code(phone.as_str(), &state.api_hash),
     )
     .await
-    .map_err(|_| anyhow::anyhow!("таймаут сети (30 с) — проверьте интернет-соединение"))?
-    .map_err(|e| anyhow::anyhow!("не удалось отправить код: {e}"))?;
-    log::info!("код отправлен для {phone}");
+    {
+        Ok(Ok(t)) => t,
+        Ok(Err(e)) => {
+            // B.1.4/B.2.1: полу-созданный SenderPool гасим и убираем файл сессии
+            handle.quit();
+            let _ = tokio::fs::remove_file(&session_path).await;
+            return Err(anyhow::anyhow!("не удалось отправить код: {e}"));
+        }
+        Err(_) => {
+            handle.quit();
+            let _ = tokio::fs::remove_file(&session_path).await;
+            return Err(anyhow::anyhow!(
+                "таймаут сети (30 с) — проверьте интернет-соединение"
+            ));
+        }
+    };
+    log::info!("код отправлен для {masked}");
 
     state.pending_auths.lock().insert(
         phone.to_string(),
@@ -102,6 +124,7 @@ pub async fn add_account_phone(
             login_token,
             password_token: None,
             session_file: session_file.clone(),
+            created_at: Instant::now(),
         })),
     );
     Ok(serde_json::json!({ "stage": "code" }))
@@ -120,6 +143,74 @@ fn normalize_phone(raw: &str) -> String {
         cleaned
     } else {
         format!("+{cleaned}")
+    }
+}
+
+/// B.3.1: маска телефона (PII) для логов: `+79***67`.
+fn mask_phone(phone: &str) -> String {
+    let chars: Vec<char> = phone.chars().collect();
+    if chars.len() <= 4 {
+        return "***".to_string();
+    }
+    let head: String = chars.iter().take(3).collect();
+    let tail: String = chars[chars.len() - 2..].iter().collect();
+    format!("{head}***{tail}")
+}
+
+/// TTL заброшенной попытки входа (B.2.1): 10 минут.
+pub const PENDING_AUTH_TTL: Duration = Duration::from_secs(600);
+/// Период прохода janitor'а (B.2.1).
+const PENDING_AUTH_SWEEP: Duration = Duration::from_secs(60);
+
+/// Фоновый janitor: периодически гасит заброшенные PendingAuth (B.2.1).
+pub fn spawn_pending_auth_janitor(state: &Arc<AppState>) {
+    let app = state.clone();
+    state.runtime.spawn(async move {
+        loop {
+            tokio::time::sleep(PENDING_AUTH_SWEEP).await;
+            reap_expired_pending_auths(&app, PENDING_AUTH_TTL).await;
+        }
+    });
+}
+
+/// Погасить и удалить PendingAuth старше `ttl` (B.2.1), чтобы
+/// `pending_auths` не рос неограниченно.
+pub async fn reap_expired_pending_auths(state: &AppState, ttl: Duration) {
+    let now = Instant::now();
+    let expired: Vec<Arc<tokio::sync::Mutex<PendingAuth>>> = {
+        let mut map = state.pending_auths.lock();
+        let keys: Vec<String> = map.keys().cloned().collect();
+        let mut expired = Vec::new();
+        for k in keys {
+            let is_expired = match map.get(&k) {
+                Some(a) => match a.try_lock() {
+                    Ok(p) => now.saturating_duration_since(p.created_at) >= ttl,
+                    // занят другой задачей — проверим в следующем проходе
+                    Err(_) => false,
+                },
+                None => false,
+            };
+            if is_expired {
+                if let Some(a) = map.remove(&k) {
+                    expired.push(a);
+                }
+            }
+        }
+        expired
+    };
+    for a in expired {
+        let p = a.lock().await;
+        p._handle.quit();
+        let file = p.session_file.clone();
+        drop(p);
+        let still_used = {
+            let accounts = state.accounts.read();
+            accounts.values().any(|e| e.record.session_file == file)
+        };
+        if !still_used {
+            let _ = tokio::fs::remove_file(state.sessions_dir().join(&file)).await;
+        }
+        log::info!("pending_auths: истёкшая попытка входа погашена и удалена");
     }
 }
 
@@ -251,10 +342,21 @@ async fn finalize_login(
 
     {
         let mut accounts = state.accounts.write();
-        // legacy: запись старого формата (id = просто user_id)
-        if let Some(old) = accounts.get(&legacy_id) {
+        // legacy: запись старого формата (id = просто user_id) в этом же пуле.
+        // B.1.4: старый live-клиент гасим, иначе утечка соединения.
+        if let Some(old) = accounts.remove(&legacy_id) {
             if old.record.pool == p.pool {
-                accounts.remove(&legacy_id);
+                if let Some(l) = old.live {
+                    l._handle.quit();
+                }
+            } else {
+                accounts.insert(legacy_id.clone(), old);
+            }
+        }
+        // insert поверх существующей записи: старый live тоже гасим (B.1.4)
+        if let Some(old) = accounts.remove(&entry.record.id) {
+            if let Some(l) = old.live {
+                l._handle.quit();
             }
         }
         accounts.insert(entry.record.id.clone(), entry);

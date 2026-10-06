@@ -28,6 +28,80 @@ struct WorkerResult {
     /// id авторов без username / не из вектора users
     no_username: HashSet<i64>,
     stopped: bool,
+    /// B.2.3: обход прерван ошибкой/таймаутом — результат усечён
+    truncated: bool,
+}
+
+/// B.2.3: получить страницу getHistory под единым таймаутом, с одним
+/// повтором после FLOOD_WAIT. `None` — страницу получить не удалось
+/// (вызывающий помечает результат усечённым).
+async fn fetch_page(
+    client: &Client,
+    request: &grammers_tl_types::functions::messages::GetHistory,
+    state: &AppState,
+) -> Option<grammers_tl_types::enums::messages::Messages> {
+    match super::connect::with_rpc_timeout(client.invoke(request)).await {
+        Ok(Ok(resp)) => Some(resp),
+        Ok(Err(e)) if e.is("FLOOD_WAIT") => {
+            let secs = flood_wait_secs(&e).unwrap_or(30).min(300);
+            log::warn!("parse: FLOOD_WAIT {secs}s — пережидаем");
+            state.progress(
+                "parse_start",
+                serde_json::json!({"phase": "flood_wait", "wait": secs}),
+            );
+            // B.2.3: FLOOD_WAIT-пауза (до 300 с) прерывается отменой парсинга
+            if !cancellable_sleep(state, std::time::Duration::from_secs(secs)).await {
+                log::warn!("parse: FLOOD_WAIT прерван отменой парсинга");
+                return None;
+            }
+            match super::connect::with_rpc_timeout(client.invoke(request)).await {
+                Ok(Ok(resp)) => Some(resp),
+                Ok(Err(e2)) => {
+                    log::warn!("parse: getHistory прерван после FLOOD_WAIT: {e2}");
+                    None
+                }
+                Err(_) => {
+                    log::warn!("parse: getHistory таймаут сети после FLOOD_WAIT");
+                    None
+                }
+            }
+        }
+        Ok(Err(e)) => {
+            log::warn!("parse: getHistory прерван: {e}");
+            None
+        }
+        Err(_) => {
+            log::warn!("parse: getHistory таймаут сети");
+            None
+        }
+    }
+}
+
+/// B.2.3: секунды из FLOOD_WAIT-ошибки.
+fn flood_wait_secs(e: &grammers_client::InvocationError) -> Option<u64> {
+    use grammers_client::InvocationError as IE;
+    if let IE::Rpc(rpc) = e {
+        rpc.value.map(|v| v as u64)
+    } else {
+        None
+    }
+}
+
+/// B.2.3: прерываемый сон при FLOOD_WAIT — проверяет отмену парсинга
+/// каждые 200 мс (образец — `inviter::cancellable_sleep`).
+/// Возвращает `false`, если поступил запрос отмены.
+async fn cancellable_sleep(state: &AppState, dur: std::time::Duration) -> bool {
+    let step = std::time::Duration::from_millis(200);
+    let mut left = dur;
+    while !left.is_zero() {
+        if state.parser_cancelled() {
+            return false;
+        }
+        let s = step.min(left);
+        tokio::time::sleep(s).await;
+        left = left.saturating_sub(s);
+    }
+    !state.parser_cancelled()
 }
 
 /// Извлечь (messages, users) из ответа getHistory.
@@ -57,6 +131,7 @@ async fn scan_worker(
     let mut message_ids = HashSet::new();
     let mut no_username: HashSet<i64> = HashSet::new();
     let mut stopped = false;
+    let mut truncated = false;
     let mut got = 0usize;
     let mut offset_id = start_offset_id;
 
@@ -76,11 +151,18 @@ async fn scan_worker(
             min_id: 0,
             hash: 0,
         };
-        let resp = match client.invoke(&request).await {
-            Ok(r) => r,
-            Err(e) => {
-                // сеть/флуд на этом воркере: сохраняем собранное
-                log::warn!("parse: getHistory прерван: {e}");
+        // B.2.2/B.2.3: страница под таймаутом, с повтором FLOOD_WAIT;
+        // при неудаче помечаем результат усечённым
+        let resp = match fetch_page(&client, &request, state).await {
+            Some(r) => r,
+            None => {
+                // B.2.3: отмена парсинга — это `stopped`, а не усечение;
+                // ошибка/таймаут сети — усечённый результат
+                if state.parser_cancelled() {
+                    stopped = true;
+                } else {
+                    truncated = true;
+                }
                 break;
             }
         };
@@ -140,7 +222,13 @@ async fn scan_worker(
         offset_id = min_id; // offset_id эксклюзивный: строго старее
     }
 
-    WorkerResult { usernames, message_ids, no_username, stopped }
+    WorkerResult {
+        usernames,
+        message_ids,
+        no_username,
+        stopped,
+        truncated,
+    }
 }
 
 /// Точка входа: parse_start { chat | dialog_id+access_hash, title, limit }.
@@ -178,13 +266,32 @@ pub async fn parse_start(
             name,
         )
     } else {
-        let peer: Peer = client
-            .resolve_username(&super::chats::normalize_chat_link(chat))
-            .await
-            .map_err(|e| super::auth::err_json("ERROR", format!("ошибка поиска чата: {e}")))?
-            .ok_or_else(|| {
-                super::auth::err_json("CHAT_NOT_FOUND", "чат не найден (resolve_username=None)")
-            })?;
+        // B.2.2: resolve_username — сетевой RPC под единым таймаутом
+        let peer: Peer = match super::connect::with_rpc_timeout(
+            client.resolve_username(&super::chats::normalize_chat_link(chat)),
+        )
+        .await
+        {
+            Ok(Ok(Some(peer))) => peer,
+            Ok(Ok(None)) => {
+                return Err(super::auth::err_json(
+                    "CHAT_NOT_FOUND",
+                    "чат не найден (resolve_username=None)",
+                ))
+            }
+            Ok(Err(e)) => {
+                return Err(super::auth::err_json(
+                    "ERROR",
+                    format!("ошибка поиска чата: {e}"),
+                ))
+            }
+            Err(_) => {
+                return Err(super::auth::err_json(
+                    "TIMEOUT",
+                    "таймаут сети при поиске чата",
+                ))
+            }
+        };
         let peer_ref = peer
             .to_ref()
             .await
@@ -197,23 +304,43 @@ pub async fn parse_start(
     let limit = limit.clamp(1, 1_000_000);
     let input_peer: grammers_tl_types::enums::InputPeer = (&peer_ref).into();
 
-    // верхняя граница id — для разбиения на окна
-    let top_id: i32 = {
-        let mut it = client.iter_messages(peer_ref).limit(1);
-        match it.next().await {
-            Ok(Some(m)) => m.id(),
-            _ => 0,
-        }
-    };
-
     let done = AtomicUsize::new(0);
     let mut stopped = false;
+    let mut truncated = false;
     let mut usernames: HashMap<i64, String> = HashMap::new();
     let mut no_username: HashSet<i64> = HashSet::new();
     let mut message_ids: HashSet<i32> = HashSet::new();
 
+    // верхняя граница id — для разбиения на окна.
+    // B.2.2: сетевой RPC iter_messages().next() под единым таймаутом.
+    // B.2.3: таймаут/ошибка помечают результат усечённым (truncated), а не
+    // выглядят как «сообщений нет» (top_id = 0).
+    let top_id: i32 = {
+        let mut it = client.iter_messages(peer_ref).limit(1);
+        match super::connect::with_rpc_timeout(it.next()).await {
+            Ok(Ok(Some(m))) => m.id(),
+            Ok(Ok(None)) => 0,
+            Ok(Err(e)) => {
+                log::warn!("parse {base_name}: iter_messages прерван: {e}");
+                truncated = true;
+                0
+            }
+            Err(_) => {
+                log::warn!("parse {base_name}: iter_messages таймаут сети");
+                truncated = true;
+                0
+            }
+        }
+    };
+
     if top_id <= 0 {
-        log::info!("parse {base_name}: сообщений не найдено");
+        if truncated {
+            log::warn!(
+                "parse {base_name}: верхняя граница не определена (таймаут/ошибка) — результат усечён"
+            );
+        } else {
+            log::info!("parse {base_name}: сообщений не найдено");
+        }
     } else {
         let per = (limit / MSG_WORKERS).max(1);
         let mut futs = Vec::with_capacity(MSG_WORKERS);
@@ -243,6 +370,9 @@ pub async fn parse_start(
             if r.stopped {
                 stopped = true;
             }
+            if r.truncated {
+                truncated = true;
+            }
             usernames.extend(r.usernames);
             no_username.extend(r.no_username);
             message_ids.extend(r.message_ids);
@@ -271,5 +401,9 @@ pub async fn parse_start(
         "messages": messages_done,
         "authors": saved + skipped,
         "stopped": stopped,
+        // B.2.3: результат усечён (ошибка/таймаут сети) — не выдаём его
+        // как полный, чтобы UI не считал базу полной
+        "truncated": truncated,
+        "partial": truncated,
     }))
 }

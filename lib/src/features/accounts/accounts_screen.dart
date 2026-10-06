@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/bridge.dart';
@@ -21,15 +23,15 @@ class _AccountsScreenState extends State<AccountsScreen> {
   @override
   void initState() {
     super.initState();
-    _controller.reload();
+    unawaited(_controller.reload());
     // перерисоваться, когда ядро доинициализируется (UI-гонка: баннер
     // «ядро не найдено» иначе остаётся навсегда при успешной поздней загрузке)
-    PiarCore.instance.init().then((_) {
+    unawaited(PiarCore.instance.init().then((_) {
       if (mounted) {
         setState(() {});
-        _controller.reload();
+        unawaited(_controller.reload());
       }
-    });
+    }));
   }
 
   @override
@@ -159,9 +161,11 @@ class _AccountsScreenState extends State<AccountsScreen> {
             children: [
               Text(
                 currentId == null
-                    ? '⚠ Сейчас используется пара ПО УМОЛЧАНИЮ — Telegram её '
-                        'отклоняет (api_id_invalid). Обязательно заполни поля ниже.'
-                    : 'Сейчас: своя пара (api_id $currentId) ✓',
+                    ? '⚠ Своя пара api_id/api_hash обязательна — без неё ядро '
+                        'не запустится (код -3). Заполни поля ниже, сохрани и '
+                        'перезапусти приложение.'
+                    : 'Сейчас: своя пара (api_id $currentId) ✓. После сохранения '
+                        'требуется перезапуск приложения.',
                 style: TextStyle(
                   fontSize: 12,
                   color: currentId == null ? Colors.orangeAccent : Colors.greenAccent,
@@ -305,7 +309,9 @@ class _AccountCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (label, color) = switch ((account.connected, account.restricted)) {
-      (false, true) => ('Ограничен', Colors.redAccent),
+      // restricted важнее connected: подключённый, но ограниченный аккаунт
+      // должен показываться как «Ограничен», а не «Офлайн»
+      (_, true) => ('Ограничен', Colors.redAccent),
       (true, false) => ('Подключён', Colors.greenAccent),
       _ => ('Офлайн', Colors.orangeAccent),
     };

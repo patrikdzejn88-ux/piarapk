@@ -57,13 +57,11 @@ class AccountsController extends ChangeNotifier {
   Future<PiarResult> importSession(
           {required String pool,
           required String session,
-          int? apiId,
-          String? apiHash}) =>
+          int? apiId}) =>
       PiarCore.instance.callAsync('import_string_session', {
         'pool': pool,
         'session': session,
         'api_id': ?apiId,
-        if (apiHash != null && apiHash.isNotEmpty) 'api_hash': apiHash,
       });
 
   Future<PiarResult> importTdata(
@@ -98,13 +96,13 @@ class AccountsController extends ChangeNotifier {
       'move_account',
     };
     if (event.type == 'result' && methods.contains(event.method)) {
-      reload();
+      unawaited(reload());
     }
   }
 
   @override
   void dispose() {
-    _eventsSub?.cancel();
+    unawaited(_eventsSub?.cancel());
     super.dispose();
   }
 }

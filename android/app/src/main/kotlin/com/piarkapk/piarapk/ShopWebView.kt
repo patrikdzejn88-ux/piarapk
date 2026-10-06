@@ -1,8 +1,11 @@
 package com.piarkapk.piarapk
 
 import android.annotation.SuppressLint
+import android.app.Activity
+import android.app.AlertDialog
 import android.app.DownloadManager
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Environment
 import android.util.Log
@@ -18,6 +21,29 @@ import android.webkit.WebViewClient
 import io.flutter.plugin.common.StandardMessageCodec
 import io.flutter.plugin.platform.PlatformView
 import io.flutter.plugin.platform.PlatformViewFactory
+import java.lang.ref.WeakReference
+
+/** Схемы, которые разрешено открывать во внешнем приложении. */
+private val EXTERNAL_SCHEMES = setOf("tel", "mailto")
+
+/**
+ * Открывает внешнюю ссылку только из белого списка схем (tel/mailto).
+ * Произвольные схемы (intent:, market:, file: и т.п.) игнорируются.
+ */
+internal fun openExternalScheme(context: Context, uri: Uri): Boolean {
+    val scheme = uri.scheme?.lowercase() ?: return false
+    if (scheme !in EXTERNAL_SCHEMES) return false
+    return try {
+        val intent = Intent(Intent.ACTION_VIEW, uri)
+        if (context !is Activity) {
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(intent)
+        true
+    } catch (_: Exception) {
+        true
+    }
+}
 
 /**
  * Один живой WebView на весь процесс: создаётся при старте Activity,
@@ -29,7 +55,13 @@ object ShopWebViewHolder {
     var webView: WebView? = null
         private set
 
+    /** Хост-Activity только для показа диалогов (слабая ссылка — без утечки). */
+    private var hostActivity: WeakReference<Activity>? = null
+
     fun ensure(context: Context): WebView {
+        if (context is Activity) {
+            hostActivity = WeakReference(context)
+        }
         webView?.let { return it }
         val wv = WebView(context.applicationContext)
         webView = wv
@@ -50,7 +82,8 @@ object ShopWebViewHolder {
     private fun setup(webView: WebView) {
         val cookies = CookieManager.getInstance()
         cookies.setAcceptCookie(true)
-        cookies.setAcceptThirdPartyCookies(webView, true)
+        // Сторонние куки магазину не нужны — выключаем.
+        cookies.setAcceptThirdPartyCookies(webView, false)
 
         webView.settings.apply {
             javaScriptEnabled = true
@@ -58,7 +91,9 @@ object ShopWebViewHolder {
             databaseEnabled = true
             loadsImagesAutomatically = true
             cacheMode = WebSettings.LOAD_DEFAULT
-            mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+            allowFileAccess = false
+            allowContentAccess = false
             useWideViewPort = true
             loadWithOverviewMode = true
             setSupportZoom(false)
@@ -69,21 +104,12 @@ object ShopWebViewHolder {
                 view: WebView,
                 request: WebResourceRequest
             ): Boolean {
-                val scheme = request.url.scheme ?: "https"
+                val scheme = request.url.scheme?.lowercase() ?: return false
                 if (scheme == "http" || scheme == "https") {
                     return false
                 }
-                return try {
-                    view.context.startActivity(
-                        android.content.Intent(
-                            android.content.Intent.ACTION_VIEW,
-                            request.url
-                        )
-                    )
-                    true
-                } catch (_: Exception) {
-                    true
-                }
+                openExternalScheme(view.context, request.url)
+                return true
             }
 
             override fun onPageFinished(view: WebView, url: String) {
@@ -94,21 +120,41 @@ object ShopWebViewHolder {
         webView.webChromeClient = WebChromeClient()
 
         webView.setDownloadListener { url, _, contentDisposition, mimetype, _ ->
+            val activity = hostActivity?.get()
+            if (activity == null) {
+                Log.w("piarapk", "shop download ignored: host activity unavailable")
+                return@setDownloadListener
+            }
             try {
                 val name = URLUtil.guessFileName(url, contentDisposition, mimetype)
-                val request = DownloadManager.Request(Uri.parse(url))
-                    .setNotificationVisibility(
-                        DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
-                    )
-                    .setDestinationInExternalPublicDir(
-                        Environment.DIRECTORY_DOWNLOADS, name
-                    )
-                if (mimetype != null) request.setMimeType(mimetype)
-                (webView.context.getSystemService(Context.DOWNLOAD_SERVICE)
-                    as DownloadManager).enqueue(request)
+                AlertDialog.Builder(activity)
+                    .setTitle("Скачать файл?")
+                    .setMessage(name)
+                    .setPositiveButton("Скачать") { _, _ ->
+                        enqueueDownload(webView, url, name, mimetype)
+                    }
+                    .setNegativeButton("Отмена", null)
+                    .show()
             } catch (e: Exception) {
-                Log.e("piarapk", "shop download failed", e)
+                Log.e("piarapk", "shop download confirm failed", e)
             }
+        }
+    }
+
+    private fun enqueueDownload(webView: WebView, url: String, name: String, mimetype: String?) {
+        try {
+            val request = DownloadManager.Request(Uri.parse(url))
+                .setNotificationVisibility(
+                    DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
+                )
+                .setDestinationInExternalPublicDir(
+                    Environment.DIRECTORY_DOWNLOADS, name
+                )
+            if (mimetype != null) request.setMimeType(mimetype)
+            (webView.context.getSystemService(Context.DOWNLOAD_SERVICE)
+                as DownloadManager).enqueue(request)
+        } catch (e: Exception) {
+            Log.e("piarapk", "shop download failed", e)
         }
     }
 }
